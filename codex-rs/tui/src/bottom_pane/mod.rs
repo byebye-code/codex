@@ -125,17 +125,31 @@ impl BottomPane {
         if area.height == 0 {
             return [Rect::ZERO, Rect::ZERO, Rect::ZERO];
         }
-        // At small heights, dedicate all space to the content.
-        let (top_margin, bottom_margin) = if area.height <= Self::BOTTOM_PAD_LINES + 1 {
-            (0, 0)
-        } else {
-            (1, Self::BOTTOM_PAD_LINES.min(area.height.saturating_sub(1)))
-        };
 
-        let content_height = area
+        let mut top_margin = 1.min(area.height);
+        let mut bottom_margin = Self::BOTTOM_PAD_LINES.min(area.height);
+
+        let mut content_height = area
             .height
             .saturating_sub(top_margin)
             .saturating_sub(bottom_margin);
+
+        if content_height == 0 && area.height > 0 {
+            if bottom_margin > 0 {
+                bottom_margin = bottom_margin.saturating_sub(1);
+                content_height = area
+                    .height
+                    .saturating_sub(top_margin)
+                    .saturating_sub(bottom_margin);
+            }
+            if content_height == 0 && top_margin > 0 {
+                top_margin = top_margin.saturating_sub(1);
+                content_height = area
+                    .height
+                    .saturating_sub(top_margin)
+                    .saturating_sub(bottom_margin);
+            }
+        }
 
         let top = Rect::new(area.x, area.y, area.width, top_margin);
         let content = Rect::new(

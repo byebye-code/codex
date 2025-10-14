@@ -950,41 +950,47 @@ impl ChatWidget {
     }
 
     fn layout_areas(&self, area: Rect) -> [Rect; 7] {
-        let header_height = 0u16;
         let has_active_view = self.bottom_pane.has_active_view();
-        let status_height = if area.height > 0 { 1 } else { 0 };
 
-        let mut remaining = area.height.saturating_sub(status_height);
+        let mut remaining = area.height;
+
+        let status_height = if remaining > 0 { 1 } else { 0 };
+        remaining = remaining.saturating_sub(status_height);
 
         let pill_height = if !has_active_view && remaining > 0 {
             1
         } else {
             0
         };
-        let pill_margin_height = if pill_height > 0 && remaining > pill_height {
-            1
-        } else {
-            0
-        };
-        remaining = remaining.saturating_sub(pill_margin_height);
-        remaining = remaining.saturating_sub(pill_height);
+        if pill_height > 0 {
+            remaining = remaining.saturating_sub(pill_height);
+        }
 
         let bottom_desired = self.bottom_pane.desired_height(area.width);
         let bottom_height = bottom_desired.min(remaining);
         remaining = remaining.saturating_sub(bottom_height);
 
-        let spacer_height = if !has_active_view && remaining > 0 {
+        let has_bottom_components = bottom_height > 0 || pill_height > 0 || status_height > 0;
+        let pill_margin_height = if has_bottom_components && remaining > 0 {
             1
         } else {
             0
         };
-        remaining = remaining.saturating_sub(spacer_height);
+        if pill_margin_height > 0 {
+            remaining = remaining.saturating_sub(pill_margin_height);
+        }
 
-        let active_desired = self
-            .active_cell
-            .as_ref()
-            .map_or(0, |c| c.desired_height(area.width) + 1);
-        let active_height = active_desired.min(remaining);
+        let status_gap_height = if status_height > 0 && remaining > 0 {
+            1
+        } else {
+            0
+        };
+        if status_gap_height > 0 {
+            remaining = remaining.saturating_sub(status_gap_height);
+        }
+
+        let header_height = 0u16;
+        let active_height = remaining;
 
         Layout::vertical([
             Constraint::Length(header_height),
@@ -992,7 +998,7 @@ impl ChatWidget {
             Constraint::Length(pill_margin_height),
             Constraint::Length(pill_height),
             Constraint::Length(bottom_height),
-            Constraint::Length(spacer_height),
+            Constraint::Length(status_gap_height),
             Constraint::Length(status_height),
         ])
         .areas(area)
@@ -2376,7 +2382,7 @@ impl WidgetRef for &ChatWidget {
             pill_margin_area,
             pill_area,
             bottom_pane_area,
-            spacer_area,
+            status_gap_area,
             status_area,
         ] = self.layout_areas(area);
         let has_active_view = self.bottom_pane.has_active_view();
@@ -2405,8 +2411,8 @@ impl WidgetRef for &ChatWidget {
                 Paragraph::new(line).render(pill_area, buf);
             }
         }
-        if !spacer_area.is_empty() {
-            Clear.render(spacer_area, buf);
+        if !status_gap_area.is_empty() {
+            Clear.render(status_gap_area, buf);
         }
         if !status_area.is_empty() {
             if has_active_view {
