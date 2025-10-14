@@ -1159,6 +1159,16 @@ impl ChatWidget {
                 return;
             }
             KeyEvent {
+                code: KeyCode::Esc,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            } if modifiers.is_empty() && self.bottom_pane.is_task_running() => {
+                self.bottom_pane.show_ctrl_c_quit_hint();
+                self.submit_op(Op::Interrupt);
+                return;
+            }
+            KeyEvent {
                 code: KeyCode::Char(c),
                 modifiers,
                 kind: KeyEventKind::Press,

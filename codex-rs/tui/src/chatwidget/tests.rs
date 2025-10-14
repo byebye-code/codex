@@ -655,6 +655,24 @@ fn streaming_final_answer_keeps_task_running_state() {
 }
 
 #[test]
+fn escape_interrupts_running_task_without_clearing_composer() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual();
+
+    chat.on_task_started();
+    chat.bottom_pane
+        .set_composer_text("queued submission".to_string());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    match op_rx.try_recv() {
+        Ok(Op::Interrupt) => {}
+        other => panic!("expected Op::Interrupt, got {other:?}"),
+    }
+    assert!(chat.bottom_pane.ctrl_c_quit_hint_visible());
+    assert_eq!(chat.bottom_pane.composer_text(), "queued submission");
+}
+
+#[test]
 fn exec_history_cell_shows_working_then_completed() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
 
