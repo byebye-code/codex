@@ -43,6 +43,7 @@ use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::ReviewRequest;
+use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
@@ -264,6 +265,7 @@ pub(crate) struct ChatWidget {
     frame_requester: FrameRequester,
     // Whether to include the initial welcome banner on session configured
     show_welcome_banner: bool,
+    session_header_inserted: bool,
     // When resuming an existing session (selected via resume picker), avoid an
     // immediate redraw on SessionConfigured to prevent a gratuitous UI flicker.
     suppress_session_configured_redraw: bool,
@@ -334,6 +336,42 @@ impl ChatWidget {
         self.spawn_status_line_background_tasks();
     }
 
+    fn synthetic_session_configured(&self) -> SessionConfiguredEvent {
+        SessionConfiguredEvent {
+            session_id: ConversationId::new(),
+            model: self.config.model.clone(),
+            reasoning_effort: self.config.model_reasoning_effort,
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            rollout_path: PathBuf::new(),
+        }
+    }
+
+    fn insert_session_info(&mut self, event: SessionConfiguredEvent, is_first_event: bool) {
+        let cell = history_cell::new_session_info(&self.config, event, is_first_event);
+        if cell.display_lines(u16::MAX).is_empty() {
+            if is_first_event {
+                self.session_header_inserted = true;
+                self.show_welcome_banner = false;
+            }
+            return;
+        }
+        self.add_boxed_history(Box::new(cell));
+        if is_first_event {
+            self.session_header_inserted = true;
+            self.show_welcome_banner = false;
+        }
+    }
+
+    fn ensure_initial_session_header(&mut self) {
+        if self.session_header_inserted || !self.show_welcome_banner {
+            return;
+        }
+        let synthetic = self.synthetic_session_configured();
+        self.insert_session_info(synthetic, true);
+    }
+
     fn sync_status_line_model(&mut self) {
         self.status_line.update_model(
             self.config.model.clone(),
@@ -384,7 +422,7 @@ impl ChatWidget {
     }
 
     // --- Small event handlers ---
-    fn on_session_configured(&mut self, event: codex_core::protocol::SessionConfiguredEvent) {
+    fn on_session_configured(&mut self, event: SessionConfiguredEvent) {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.conversation_id = Some(event.session_id);
@@ -395,11 +433,8 @@ impl ChatWidget {
         self.session_header.set_model(&model_for_header);
         self.sync_status_line_model();
         self.spawn_status_line_background_tasks();
-        self.add_to_history(history_cell::new_session_info(
-            &self.config,
-            event,
-            self.show_welcome_banner,
-        ));
+        let is_first_header = !self.session_header_inserted && self.show_welcome_banner;
+        self.insert_session_info(event, is_first_header);
         if let Some(messages) = initial_messages {
             self.replay_initial_messages(messages);
         }
@@ -949,54 +984,111 @@ impl ChatWidget {
         self.status_line.update_run_header("Working");
     }
 
-    fn layout_areas(&self, area: Rect) -> [Rect; 7] {
+    fn layout_areas(&self, area: Rect) -> [Rect; 8] {
         let has_active_view = self.bottom_pane.has_active_view();
+        let status_height = if area.height > 0 { 1 } else { 0 };
+        let mut bottom_height = self.bottom_pane.desired_height(area.width);
+        let mut composer_gap_enabled = true;
+        let mut status_gap_enabled = true;
+        let mut pill_margin_enabled = true;
+        let mut pill_enabled = !has_active_view && area.height > 0;
 
-        let mut remaining = area.height;
+        let (
+            active_height,
+            pill_margin_height,
+            pill_height,
+            composer_gap_height,
+            bottom_height,
+            status_gap_height,
+            status_height,
+        ) = loop {
+            let has_bottom = bottom_height > 0;
+            let composer_gap_height = if has_bottom && composer_gap_enabled {
+                1
+            } else {
+                0
+            };
+            let status_gap_height = if has_bottom && status_gap_enabled {
+                1
+            } else {
+                0
+            };
+            let pill_height = if pill_enabled { 1 } else { 0 };
+            let pill_margin_height =
+                if pill_margin_enabled && (has_bottom || pill_height > 0 || status_height > 0) {
+                    1
+                } else {
+                    0
+                };
 
-        let status_height = if remaining > 0 { 1 } else { 0 };
-        remaining = remaining.saturating_sub(status_height);
+            let fixed_total = pill_margin_height
+                + pill_height
+                + composer_gap_height
+                + bottom_height
+                + status_gap_height
+                + status_height;
 
-        let pill_height = if !has_active_view && remaining > 0 {
-            1
-        } else {
-            0
+            if fixed_total <= area.height {
+                let active_height = area.height.saturating_sub(fixed_total);
+                break (
+                    active_height,
+                    pill_margin_height,
+                    pill_height,
+                    composer_gap_height,
+                    bottom_height,
+                    status_gap_height,
+                    status_height,
+                );
+            }
+
+            if bottom_height > 0 {
+                let diff = fixed_total.saturating_sub(area.height);
+                let reduce = diff.min(bottom_height);
+                bottom_height = bottom_height.saturating_sub(reduce);
+                continue;
+            }
+            if composer_gap_enabled && composer_gap_height > 0 {
+                composer_gap_enabled = false;
+                continue;
+            }
+            if status_gap_enabled && status_gap_height > 0 {
+                status_gap_enabled = false;
+                continue;
+            }
+            if pill_margin_enabled && pill_margin_height > 0 {
+                pill_margin_enabled = false;
+                continue;
+            }
+            if pill_enabled && pill_height > 0 {
+                pill_enabled = false;
+                continue;
+            }
+
+            let pill_margin_height = pill_margin_height.min(area.height);
+            let pill_height = pill_height.min(area.height);
+            let bottom_height = bottom_height.min(area.height);
+            let active_height = area
+                .height
+                .saturating_sub(pill_margin_height + pill_height + bottom_height + status_height);
+            break (
+                active_height,
+                pill_margin_height,
+                pill_height,
+                0,
+                bottom_height,
+                0,
+                status_height,
+            );
         };
-        if pill_height > 0 {
-            remaining = remaining.saturating_sub(pill_height);
-        }
-
-        let bottom_desired = self.bottom_pane.desired_height(area.width);
-        let bottom_height = bottom_desired.min(remaining);
-        remaining = remaining.saturating_sub(bottom_height);
-
-        let has_bottom_components = bottom_height > 0 || pill_height > 0 || status_height > 0;
-        let pill_margin_height = if has_bottom_components && remaining > 0 {
-            1
-        } else {
-            0
-        };
-        if pill_margin_height > 0 {
-            remaining = remaining.saturating_sub(pill_margin_height);
-        }
-
-        let status_gap_height = if status_height > 0 && remaining > 0 {
-            1
-        } else {
-            0
-        };
-        if status_gap_height > 0 {
-            remaining = remaining.saturating_sub(status_gap_height);
-        }
 
         let header_height = 0u16;
-        let active_height = remaining;
 
         Layout::vertical([
             Constraint::Length(header_height),
             Constraint::Length(active_height),
             Constraint::Length(pill_margin_height),
             Constraint::Length(pill_height),
+            Constraint::Length(composer_gap_height),
             Constraint::Length(bottom_height),
             Constraint::Length(status_gap_height),
             Constraint::Length(status_height),
@@ -1059,6 +1151,7 @@ impl ChatWidget {
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
+            session_header_inserted: false,
             suppress_session_configured_redraw: false,
             pending_notification: None,
             is_review_mode: false,
@@ -1069,6 +1162,7 @@ impl ChatWidget {
         };
 
         widget.bootstrap_status_line();
+        widget.ensure_initial_session_header();
         widget
     }
 
@@ -1076,7 +1170,7 @@ impl ChatWidget {
     pub(crate) fn new_from_existing(
         common: ChatWidgetInit,
         conversation: std::sync::Arc<codex_core::CodexConversation>,
-        session_configured: codex_core::protocol::SessionConfiguredEvent,
+        session_configured: SessionConfiguredEvent,
     ) -> Self {
         let ChatWidgetInit {
             config,
@@ -1131,6 +1225,7 @@ impl ChatWidget {
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
+            session_header_inserted: false,
             suppress_session_configured_redraw: false,
             pending_notification: None,
             is_review_mode: false,
@@ -1141,6 +1236,7 @@ impl ChatWidget {
         };
 
         widget.bootstrap_status_line();
+        widget.ensure_initial_session_header();
         widget
     }
 
@@ -1150,7 +1246,7 @@ impl ChatWidget {
                 .active_cell
                 .as_ref()
                 .map_or(0, |c| c.desired_height(width) + 1)
-            + 1
+            + 4
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -2369,7 +2465,7 @@ impl ChatWidget {
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let [_, _, _, _, bottom_pane_area, _, _] = self.layout_areas(area);
+        let [_, _, _, _, _, bottom_pane_area, _, _] = self.layout_areas(area);
         self.bottom_pane.cursor_pos(bottom_pane_area)
     }
 }
@@ -2381,6 +2477,7 @@ impl WidgetRef for &ChatWidget {
             active_cell_area,
             pill_margin_area,
             pill_area,
+            composer_gap_area,
             bottom_pane_area,
             status_gap_area,
             status_area,
@@ -2410,6 +2507,9 @@ impl WidgetRef for &ChatWidget {
                 let line = self.status_line.render_run_pill(pill_area.width);
                 Paragraph::new(line).render(pill_area, buf);
             }
+        }
+        if !composer_gap_area.is_empty() {
+            Clear.render(composer_gap_area, buf);
         }
         if !status_gap_area.is_empty() {
             Clear.render(status_gap_area, buf);

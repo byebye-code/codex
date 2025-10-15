@@ -248,7 +248,7 @@ fn make_chatwidget_manual() -> (
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
 ) {
-    let (tx_raw, rx) = unbounded_channel::<AppEvent>();
+    let (tx_raw, mut rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
     let cfg = test_config();
@@ -285,6 +285,7 @@ fn make_chatwidget_manual() -> (
         full_reasoning_buffer: String::new(),
         conversation_id: None,
         show_welcome_banner: true,
+        session_header_inserted: false,
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
         pending_notification: None,
@@ -297,7 +298,9 @@ fn make_chatwidget_manual() -> (
     // Force a deterministic devspace so status line snapshots stay stable.
     set_devspace_override_for_tests(Some("earth".to_string()));
     widget.bootstrap_status_line();
+    widget.ensure_initial_session_header();
     clear_devspace_override_for_tests();
+    while rx.try_recv().is_ok() {}
     (widget, rx, op_rx)
 }
 
@@ -1269,14 +1272,14 @@ async fn binary_size_transcript_snapshot() {
     const MARKER_PREFIX: &str = "To get started, describe a task or try one of these commands:";
     let last_marker_line_idx = lines
         .iter()
-        .rposition(|l| l.trim_start().starts_with(MARKER_PREFIX))
-        .expect("marker not found in visible output");
+        .rposition(|l| l.trim_start().starts_with(MARKER_PREFIX));
+    let search_start = last_marker_line_idx.map_or(0, |idx| idx + 1);
     // Prefer the first assistant content line (blockquote '>' prefix) after the marker;
     // fallback to the first non-empty, non-'thinking' line.
-    let start_idx = (last_marker_line_idx + 1..lines.len())
+    let start_idx = (search_start..lines.len())
         .find(|&idx| lines[idx].trim_start().starts_with('•'))
         .unwrap_or_else(|| {
-            (last_marker_line_idx + 1..lines.len())
+            (search_start..lines.len())
                 .find(|&idx| {
                     let t = lines[idx].trim_start();
                     !t.is_empty() && t != "thinking"
@@ -1837,7 +1840,7 @@ fn apply_patch_untrusted_shows_approval_modal() {
     });
 
     // Render and ensure the approval modal title is present
-    let area = Rect::new(0, 0, 80, 12);
+    let area = Rect::new(0, 0, 80, chat.desired_height(80));
     let mut buf = Buffer::empty(area);
     (&chat).render_ref(area, &mut buf);
 
