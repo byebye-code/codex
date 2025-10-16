@@ -1008,10 +1008,10 @@ impl ChatWidget {
             } else {
                 0
             };
-            let status_gap_height = if has_bottom && status_gap_enabled {
-                1
-            } else {
+            let status_gap_height = if has_bottom || !status_gap_enabled {
                 0
+            } else {
+                1
             };
             let pill_height = if pill_enabled { 1 } else { 0 };
             let pill_margin_height =

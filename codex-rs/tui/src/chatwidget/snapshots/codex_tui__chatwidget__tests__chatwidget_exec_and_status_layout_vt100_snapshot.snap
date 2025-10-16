@@ -7,6 +7,7 @@ expression: term.backend().vt100().screen().contents()
 • I’m going to search the repo for where “Change Approved” is rendered to update
   that view.
 
+• Explored
   └ Search Change Approved
     Read diff_render.rs
 
@@ -14,5 +15,4 @@ expression: term.backend().vt100().screen().contents()
 
 
 › Summarize recent commits
-
  tui  󱚥 gpt-5-codex             󰋩 earth   vermissian   ck-kubero-admin 
