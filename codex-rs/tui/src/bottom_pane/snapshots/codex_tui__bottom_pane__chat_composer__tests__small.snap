@@ -2,6 +2,7 @@
 source: tui/src/bottom_pane/chat_composer.rs
 expression: terminal.backend()
 ---
+"                                                                                                    "
 "› short                                                                                             "
 "                                                                                                    "
 "                                                                                                    "
@@ -10,5 +11,4 @@ expression: terminal.backend()
 "                                                                                                    "
 "                                                                                                    "
 "                                                                                                    "
-"                                                                                                    "
-"                                                                                                    "
+"  100% context left                                                                                 "

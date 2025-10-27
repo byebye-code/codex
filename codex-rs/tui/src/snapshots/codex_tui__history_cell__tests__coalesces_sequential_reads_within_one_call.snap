@@ -5,4 +5,4 @@ expression: rendered
 • Explored
   └ Search shimmer_spans
     Read shimmer.rs
-    Read statusline/mod.rs
+    Read status_indicator_widget.rs

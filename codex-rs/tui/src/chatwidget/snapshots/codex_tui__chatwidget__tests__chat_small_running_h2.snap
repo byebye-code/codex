@@ -1,6 +1,7 @@
 ---
 source: tui/src/chatwidget/tests.rs
+assertion_line: 1500
 expression: terminal.backend()
 ---
-" 󰔟 0s • Thinking                      "
-" tui  󱚥 gpt-5-codex    vermissian "
+"                                        "
+"› Ask Codex to do anything              "

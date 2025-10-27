@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use codex_common::approval_presets::ApprovalPreset;
 use codex_common::model_presets::ModelPreset;
 use codex_core::protocol::ConversationPathResponseEvent;
 use codex_core::protocol::Event;
@@ -41,6 +42,11 @@ pub(crate) enum AppEvent {
         matches: Vec<FileMatch>,
     },
 
+    /// Background Git detection updates for the custom status line.
+    StatusLineGit(Option<StatusLineGitSnapshot>),
+    /// Background kube context updates for the custom status line.
+    StatusLineKubeContext(Option<String>),
+
     /// Result of computing a `/diff` command.
     DiffResult(String),
 
@@ -62,25 +68,30 @@ pub(crate) enum AppEvent {
         effort: Option<ReasoningEffort>,
     },
 
-    /// Toggle an MCP server's enabled state for the current workspace.
-    ToggleMcpServer {
-        server: String,
-        enabled: bool,
-    },
-
     /// Open the reasoning selection popup after picking a model.
     OpenReasoningPopup {
-        model: String,
-        presets: Vec<ModelPreset>,
+        model: ModelPreset,
     },
 
-    StatusLineGit(Option<StatusLineGitSnapshot>),
-    StatusLineKubeContext(Option<String>),
+    /// Open the confirmation prompt before enabling full access mode.
+    OpenFullAccessConfirmation {
+        preset: ApprovalPreset,
+    },
+
     /// Update the current approval policy in the running app and widget.
     UpdateAskForApprovalPolicy(AskForApproval),
 
     /// Update the current sandbox policy in the running app and widget.
     UpdateSandboxPolicy(SandboxPolicy),
+
+    /// Update whether the full access warning prompt has been acknowledged.
+    UpdateFullAccessWarningAcknowledged(bool),
+
+    /// Persist the acknowledgement flag for the full access warning prompt.
+    PersistFullAccessWarningAcknowledged,
+
+    /// Re-open the approval presets popup.
+    OpenApprovalsPopup,
 
     /// Forwarded conversation history snapshot from the current conversation.
     ConversationHistory(ConversationPathResponseEvent),
@@ -96,4 +107,23 @@ pub(crate) enum AppEvent {
 
     /// Open the approval popup.
     FullScreenApprovalRequest(ApprovalRequest),
+
+    /// Open the feedback note entry overlay after the user selects a category.
+    OpenFeedbackNote {
+        category: FeedbackCategory,
+        include_logs: bool,
+    },
+
+    /// Open the upload consent popup for feedback after selecting a category.
+    OpenFeedbackConsent {
+        category: FeedbackCategory,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FeedbackCategory {
+    BadResult,
+    GoodResult,
+    Bug,
+    Other,
 }

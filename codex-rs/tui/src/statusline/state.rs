@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::status::format_directory_display;
 use crate::tui::FrameRequester;
 use codex_core::config::Config;
+use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
 use codex_core::protocol_config_types::ReasoningEffort;
 use ratatui::text::Line;
@@ -32,7 +33,7 @@ pub(crate) struct StatusLineState {
     run_timer: Option<RunTimer>,
     queued_messages: Vec<String>,
     esc_hint: bool,
-    context_window_hint: Option<u64>,
+    context_window_hint: Option<i64>,
 }
 
 impl StatusLineState {
@@ -123,6 +124,17 @@ impl StatusLineState {
 
     pub(crate) fn set_hostname(&mut self, hostname: Option<String>) {
         self.snapshot.environment.hostname = hostname;
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_interrupt_hint_visible(&mut self, visible: bool) {
+        if self.esc_hint == visible {
+            return;
+        }
+        self.esc_hint = visible;
+        if let Some(run_state) = self.snapshot.run_state.as_mut() {
+            run_state.show_interrupt_hint = visible;
+        }
         self.request_redraw();
     }
 
@@ -337,7 +349,7 @@ fn reasoning_detail(effort: Option<ReasoningEffort>) -> Option<String> {
 
 fn token_snapshot_from_info(
     info: &TokenUsageInfo,
-    context_window: Option<u64>,
+    context_window: Option<i64>,
 ) -> (StatusLineTokenSnapshot, Option<StatusLineContextSnapshot>) {
     let total = info.total_token_usage.clone();
     let last = info.last_token_usage.clone();
@@ -359,13 +371,31 @@ fn token_snapshot_from_info(
         }),
     };
 
-    let context_snapshot = context_window.map(|window| StatusLineContextSnapshot {
-        percent_remaining: last.percent_of_context_window_remaining(window),
-        tokens_in_context: last.tokens_in_context_window(),
-        window,
+    let context_snapshot = context_window.map(|window| {
+        let percent = context_percent_remaining(&last, window);
+        StatusLineContextSnapshot {
+            percent_remaining: percent,
+            tokens_in_context: last.tokens_in_context_window(),
+            window,
+        }
     });
 
     (token_snapshot, context_snapshot)
+}
+
+fn context_percent_remaining(last: &TokenUsage, context_window: i64) -> u8 {
+    const BASELINE_TOKENS: i64 = 12_000;
+    if context_window <= BASELINE_TOKENS {
+        return 0;
+    }
+    let effective_window = context_window - BASELINE_TOKENS;
+    if effective_window <= 0 {
+        return 0;
+    }
+    let used = (last.tokens_in_context_window() - BASELINE_TOKENS).max(0);
+    let remaining = (effective_window - used).max(0);
+    let percent = (remaining * 100) / effective_window;
+    percent.clamp(0, 100) as u8
 }
 
 #[cfg(test)]

@@ -86,6 +86,15 @@ fn segment_fill(color: Color) -> Style {
     Style::default().fg(BASE).bg(color)
 }
 
+fn status_spinner(start_time: Option<Instant>) -> Span<'static> {
+    let mut span = spinner(start_time);
+    if span.content.as_ref() == "•" {
+        return "◦".dim();
+    }
+    span.style = span.style.add_modifier(Modifier::DIM);
+    span
+}
+
 fn bridge_left(prev: Color, next: Color) -> Style {
     Style::default().fg(prev).bg(next)
 }
@@ -135,19 +144,19 @@ pub(crate) struct StatusLineTokenSnapshot {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TokenCountSnapshot {
-    pub total_tokens: u64,
-    pub input_tokens: u64,
-    pub cached_input_tokens: u64,
-    pub output_tokens: u64,
-    pub reasoning_output_tokens: u64,
+    pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
 }
 
 impl TokenCountSnapshot {
-    fn blended_total(&self) -> u64 {
+    fn blended_total(&self) -> i64 {
         self.input_without_cache() + self.output_tokens
     }
 
-    fn input_without_cache(&self) -> u64 {
+    fn input_without_cache(&self) -> i64 {
         self.input_tokens.saturating_sub(self.cached_input_tokens)
     }
 }
@@ -156,8 +165,8 @@ impl TokenCountSnapshot {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StatusLineContextSnapshot {
     pub percent_remaining: u8,
-    pub tokens_in_context: u64,
-    pub window: u64,
+    pub tokens_in_context: i64,
+    pub window: i64,
 }
 
 impl StatusLineContextSnapshot {
@@ -171,8 +180,8 @@ impl StatusLineContextSnapshot {
 pub(crate) struct StatusLineGitSnapshot {
     pub branch: Option<String>,
     pub dirty: bool,
-    pub ahead: Option<u32>,
-    pub behind: Option<u32>,
+    pub ahead: Option<i64>,
+    pub behind: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -748,7 +757,7 @@ impl<'a> RenderModel<'a> {
             if !capsule_spans.is_empty() {
                 capsule_spans.push(" ".into());
             }
-            capsule_spans.push(spinner(state.spinner_started_at));
+            capsule_spans.push(status_spinner(state.spinner_started_at));
             let label = self.run_label_text(state);
             if !label.trim().is_empty() {
                 capsule_spans.push(" ".into());
@@ -760,7 +769,7 @@ impl<'a> RenderModel<'a> {
             let accent = self.status_capsule_accent(state);
             segments.push(PowerlineSegment::from_spans(
                 accent,
-                vec![spinner(state.spinner_started_at)],
+                vec![status_spinner(state.spinner_started_at)],
             ));
         } else {
             let accent = self.status_capsule_accent(state);
@@ -1125,25 +1134,27 @@ fn select_progress_char(position: usize, fill_width: usize, filled_width: usize)
     }
 }
 
-fn format_token_count(value: u64) -> String {
+fn format_token_count(value: i64) -> String {
     const MILLION: f64 = 1_000_000.0;
     const THOUSAND: f64 = 1_000.0;
-    if value as f64 >= MILLION {
-        let mut formatted = format!("{:.1}M", value as f64 / MILLION);
+    let clamped = value.max(0);
+    let value_f64 = clamped as f64;
+    if value_f64 >= MILLION {
+        let mut formatted = format!("{:.1}M", value_f64 / MILLION);
         if formatted.ends_with(".0M") {
             formatted.truncate(formatted.len() - 3);
             formatted.push('M');
         }
         formatted
-    } else if value as f64 >= THOUSAND {
-        let mut formatted = format!("{:.1}k", value as f64 / THOUSAND);
+    } else if value_f64 >= THOUSAND {
+        let mut formatted = format!("{:.1}k", value_f64 / THOUSAND);
         if formatted.ends_with(".0k") {
             formatted.truncate(formatted.len() - 3);
             formatted.push('k');
         }
         formatted
     } else {
-        value.to_string()
+        clamped.to_string()
     }
 }
 
@@ -1187,6 +1198,7 @@ fn context_bar_colors(percent_used: f64) -> (Color, Color) {
 
 #[cfg(test)]
 mod tests {
+    use super::skins::CustomStatusLineRenderer;
     use super::*;
     use insta::assert_snapshot;
     use ratatui::style::Modifier;
@@ -1289,6 +1301,60 @@ mod tests {
         let renderer = DefaultStatusLineRenderer;
         let line = renderer.render(&snapshot, 40, now);
         assert_snapshot!("statusline_narrow_40", snapshot_line_repr(&line));
+    }
+
+    #[test]
+    fn renderer_run_pill_includes_timer_queue_and_hint() {
+        let snapshot = sample_snapshot();
+        let now = Instant::now();
+        let renderer = DefaultStatusLineRenderer;
+        let repr = snapshot_line_repr(&renderer.render_run_pill(&snapshot, 80, now));
+        assert!(repr.contains("2m 05s"), "timer text missing: {repr}");
+        assert!(
+            repr.contains("Applying patch"),
+            "run label missing from pill: {repr}"
+        );
+        assert!(repr.contains("next:"), "queue prefix missing: {repr}");
+        assert!(repr.contains("git status"), "queue preview missing: {repr}");
+        assert!(repr.contains("(+1)"), "queue extra count missing: {repr}");
+        assert!(repr.contains("alt + ↑"), "hint missing: {repr}");
+    }
+
+    #[test]
+    fn renderer_run_pill_idle_is_blank_capsule() {
+        let mut snapshot = sample_snapshot();
+        snapshot.run_state = None;
+        let now = Instant::now();
+        let renderer = DefaultStatusLineRenderer;
+        let repr = snapshot_line_repr(&renderer.render_run_pill(&snapshot, 60, now));
+        assert!(
+            repr.lines().all(|line| line.contains("plain \"")),
+            "idle pill should collapse to plain padding: {repr}"
+        );
+    }
+
+    #[test]
+    fn custom_renderer_matches_default_statusline() {
+        let snapshot = sample_snapshot();
+        let now = Instant::now();
+        let default_line = DefaultStatusLineRenderer.render(&snapshot, 80, now);
+        let custom_line = CustomStatusLineRenderer.render(&snapshot, 80, now);
+        assert_eq!(
+            snapshot_line_repr(&custom_line),
+            snapshot_line_repr(&default_line)
+        );
+    }
+
+    #[test]
+    fn custom_renderer_matches_default_run_pill() {
+        let snapshot = sample_snapshot();
+        let now = Instant::now();
+        let default_line = DefaultStatusLineRenderer.render_run_pill(&snapshot, 60, now);
+        let custom_line = CustomStatusLineRenderer.render_run_pill(&snapshot, 60, now);
+        assert_eq!(
+            snapshot_line_repr(&custom_line),
+            snapshot_line_repr(&default_line)
+        );
     }
 
     #[test]

@@ -2,13 +2,10 @@ use crate::exec_command::relativize_to_home;
 use crate::text_formatting;
 use chrono::DateTime;
 use chrono::Local;
-use codex_core::auth::get_auth_file;
-use codex_core::auth::try_read_auth_json;
+use codex_core::auth::load_auth_dot_json;
 use codex_core::config::Config;
-use codex_core::git_info::get_git_repo_root;
 use codex_core::project_doc::discover_project_doc_paths;
 use std::path::Path;
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::account::StatusAccountDisplay;
@@ -86,8 +83,7 @@ pub(crate) fn compose_agents_summary(config: &Config) -> String {
 }
 
 pub(crate) fn compose_account_display(config: &Config) -> Option<StatusAccountDisplay> {
-    let auth_file = get_auth_file(&config.codex_home);
-    let auth = try_read_auth_json(&auth_file).ok()?;
+    let auth = load_auth_dot_json(&config.codex_home).ok()??;
 
     if let Some(tokens) = auth.tokens.as_ref() {
         let info = &tokens.id_token;
@@ -105,7 +101,8 @@ pub(crate) fn compose_account_display(config: &Config) -> Option<StatusAccountDi
     None
 }
 
-pub(crate) fn format_tokens_compact(value: u64) -> String {
+pub(crate) fn format_tokens_compact(value: i64) -> String {
+    let value = value.max(0);
     if value == 0 {
         return "0".to_string();
     }
@@ -113,14 +110,15 @@ pub(crate) fn format_tokens_compact(value: u64) -> String {
         return value.to_string();
     }
 
+    let value_f64 = value as f64;
     let (scaled, suffix) = if value >= 1_000_000_000_000 {
-        (value as f64 / 1_000_000_000_000.0, "T")
+        (value_f64 / 1_000_000_000_000.0, "T")
     } else if value >= 1_000_000_000 {
-        (value as f64 / 1_000_000_000.0, "B")
+        (value_f64 / 1_000_000_000.0, "B")
     } else if value >= 1_000_000 {
-        (value as f64 / 1_000_000.0, "M")
+        (value_f64 / 1_000_000.0, "M")
     } else {
-        (value as f64 / 1_000.0, "K")
+        (value_f64 / 1_000.0, "K")
     };
 
     let decimals = if scaled < 10.0 {
@@ -145,110 +143,14 @@ pub(crate) fn format_tokens_compact(value: u64) -> String {
 }
 
 pub(crate) fn format_directory_display(directory: &Path, max_width: Option<usize>) -> String {
-    const TRUNCATION_LENGTH: usize = 2;
-    const FISH_STYLE_LEN: usize = 2;
-    const TRUNCATION_SYMBOL: &str = "…";
-
-    let simplified = dunce::simplified(directory);
-
-    let (mut display_segments, rel_segments) = match relativize_to_home(simplified) {
-        Some(rel) => {
-            let segments = path_segments(&rel);
-            (vec!["~".to_string()], segments)
-        }
-        None => {
-            let mut prefix = String::new();
-            let mut segments: Vec<String> = Vec::new();
-            for component in simplified.components() {
-                use std::path::Component;
-                match component {
-                    Component::Prefix(p) => {
-                        prefix = p.as_os_str().to_string_lossy().into_owned();
-                    }
-                    Component::RootDir => {
-                        if prefix.is_empty() {
-                            prefix = std::path::MAIN_SEPARATOR.to_string();
-                        }
-                    }
-                    Component::Normal(os) => {
-                        segments.push(os.to_string_lossy().into_owned());
-                    }
-                    Component::CurDir => {}
-                    Component::ParentDir => segments.push("..".to_string()),
-                }
-            }
-            let mut initial = Vec::new();
-            if !prefix.is_empty() {
-                // Represent root directories as empty so join inserts separator.
-                if prefix == std::path::MAIN_SEPARATOR.to_string() {
-                    initial.push(String::new());
-                } else {
-                    initial.push(prefix);
-                }
-            }
-            (initial, segments)
-        }
-    };
-
-    let repo_root = get_git_repo_root(simplified);
-    let repo_segments = repo_root.as_ref().and_then(|root| {
-        relativize_to_home(root)
-            .map(|rel| path_segments(&rel))
-            .or_else(|| Some(path_segments(dunce::simplified(root))))
-    });
-
-    let repo_index = repo_segments.as_ref().and_then(|segments| {
-        if segments.is_empty() {
-            return None;
-        }
-        if segments.len() <= rel_segments.len() && rel_segments[..segments.len()] == *segments {
-            Some(segments.len() - 1)
+    let formatted = if let Some(rel) = relativize_to_home(directory) {
+        if rel.as_os_str().is_empty() {
+            "~".to_string()
         } else {
-            None
-        }
-    });
-
-    let (prefix_count, mut tail_segments) = if let Some(idx) = repo_index {
-        (idx, rel_segments[idx..].to_vec())
-    } else {
-        let tail_start = rel_segments.len().saturating_sub(TRUNCATION_LENGTH);
-        (tail_start, rel_segments[tail_start..].to_vec())
-    };
-
-    let prefix_segments = rel_segments[..prefix_count].to_vec();
-    let truncated_prefix: Vec<String> = prefix_segments
-        .into_iter()
-        .map(|segment| truncate_segment(&segment, FISH_STYLE_LEN))
-        .collect();
-
-    let mut truncated_tail = false;
-    if tail_segments.len() > TRUNCATION_LENGTH {
-        truncated_tail = true;
-        let mut kept: Vec<String> =
-            tail_segments[tail_segments.len() - TRUNCATION_LENGTH..].to_vec();
-        if let Some(root) = tail_segments.first().cloned()
-            && !kept.iter().any(|seg| seg == &root)
-        {
-            kept.insert(0, root);
-        }
-        tail_segments = kept;
-    }
-
-    display_segments.extend(truncated_prefix);
-    if truncated_tail && !tail_segments.is_empty() {
-        display_segments.push(TRUNCATION_SYMBOL.to_string());
-    }
-    display_segments.extend(tail_segments);
-
-    let formatted = if display_segments.is_empty() {
-        if let Some(repo_root) = repo_root {
-            repo_root.display().to_string()
-        } else {
-            simplified.display().to_string()
+            format!("~{}{}", std::path::MAIN_SEPARATOR, rel.display())
         }
     } else {
-        let sep = std::path::MAIN_SEPARATOR.to_string();
-        display_segments.join(sep.as_str())
+        directory.display().to_string()
     };
 
     if let Some(max_width) = max_width {
@@ -283,34 +185,4 @@ pub(crate) fn title_case(s: &str) -> String {
     };
     let rest: String = chars.as_str().to_ascii_lowercase();
     first.to_uppercase().collect::<String>() + &rest
-}
-
-fn path_segments(path: &Path) -> Vec<String> {
-    path.components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(os) => Some(os.to_string_lossy().into_owned()),
-            std::path::Component::ParentDir => Some("..".to_string()),
-            std::path::Component::CurDir => None,
-            _ => None,
-        })
-        .collect()
-}
-
-fn truncate_segment(segment: &str, len: usize) -> String {
-    if len == 0 {
-        return String::new();
-    }
-    let mut result = String::new();
-    for grapheme in segment.graphemes(true).take(len) {
-        result.push_str(grapheme);
-    }
-    if result.is_empty() {
-        segment
-            .chars()
-            .next()
-            .map(|c| c.to_string())
-            .unwrap_or_default()
-    } else {
-        result
-    }
 }
