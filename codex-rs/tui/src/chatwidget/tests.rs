@@ -736,6 +736,33 @@ fn streaming_final_answer_keeps_task_running_state() {
 }
 
 #[test]
+fn esc_interrupt_resets_status_indicator_and_statusline() {
+    use std::time::Instant;
+
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual_with_custom_statusline();
+    chat.on_task_started();
+    assert!(chat.bottom_pane.is_task_running());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    let op = op_rx.try_recv().expect("expected interrupt op");
+    assert_matches!(op, Op::Interrupt);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    assert!(!chat.bottom_pane.is_task_running());
+    assert!(!chat.bottom_pane.status_indicator_visible());
+    assert!(!chat.bottom_pane.ctrl_c_quit_hint_visible());
+
+    if let Some(overlay) = chat.status_overlay.as_mut() {
+        let snapshot = overlay.state_mut().snapshot_for_render(Instant::now());
+        let label = snapshot.run_state.expect("run state").label;
+        assert_eq!(label, "Ready when you are");
+    }
+
+    let _ = drain_insert_history(&mut rx);
+}
+
+#[test]
 fn ctrl_c_shutdown_ignores_caps_lock() {
     let (mut chat, _rx, mut op_rx) = make_chatwidget_manual();
 

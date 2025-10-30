@@ -72,28 +72,14 @@ pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
 }
 
 fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
-    // Show the context indicator on the left, appended after the primary hint
-    // (e.g., "? for shortcuts"). Keep it visible even when typing (i.e., when
-    // the shortcut hint is hidden). Hide it only for the multi-line
-    // ShortcutOverlay.
+    // Show context indicators only when explicitly requested. The default
+    // summary mode intentionally renders nothing so the footer stays hidden
+    // during normal operation.
     match props.mode {
         FooterMode::CtrlCReminder => vec![ctrl_c_reminder_line(CtrlCReminderState {
             is_task_running: props.is_task_running,
         })],
-        FooterMode::ShortcutSummary => {
-            let mut spans: Vec<Span> = Vec::new();
-            if let Some(context_line) = context_window_line(props.context_window_percent) {
-                spans.extend(context_line.spans);
-            }
-            if !spans.is_empty() {
-                spans.push(" · ".dim());
-            }
-            spans.extend(vec![
-                key_hint::plain(KeyCode::Char('?')).into(),
-                " for shortcuts".dim(),
-            ]);
-            vec![Line::from(spans)]
-        }
+        FooterMode::ShortcutSummary => Vec::new(),
         FooterMode::ShortcutOverlay => shortcut_overlay_lines(ShortcutsState {
             use_shift_enter_hint: props.use_shift_enter_hint,
             esc_backtrack_hint: props.esc_backtrack_hint,

@@ -42,7 +42,7 @@ pub(crate) struct StatusLineOverlay {
 
 impl StatusLineOverlay {
     const MARGIN_ABOVE_PILL: u16 = 1;
-    const MARGIN_ABOVE_PANE: u16 = 1;
+    const MARGIN_ABOVE_PANE: u16 = 0;
     const MARGIN_BELOW_PANE: u16 = 0;
     const RUN_PILL_HEIGHT: u16 = 1;
     const STATUS_LINE_HEIGHT: u16 = 1;

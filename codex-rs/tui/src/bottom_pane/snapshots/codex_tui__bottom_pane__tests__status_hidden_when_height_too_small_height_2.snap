@@ -2,5 +2,4 @@
 source: tui/src/bottom_pane/mod.rs
 expression: "render_snapshot(&pane, area2)"
 ---
-• Working (0s • esc 
-› Ask Codex to do a
+• Working (0s • esc

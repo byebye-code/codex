@@ -119,7 +119,7 @@ enum ActivePopup {
 // Explicit layout constants keep the composer structure easy to follow.
 const TOP_PADDING_HEIGHT: u16 = 1;
 const BOTTOM_PADDING_HEIGHT: u16 = 1;
-const BOTTOM_MARGIN_HEIGHT: u16 = 1;
+const BOTTOM_MARGIN_HEIGHT: u16 = 0;
 const TEXTAREA_RIGHT_MARGIN: u16 = 1;
 const FOOTER_SPACING_HEIGHT: u16 = 1;
 
@@ -314,8 +314,12 @@ impl ChatComposer {
         self.layout_areas(area)
     }
 
-    fn footer_spacing(_footer_hint_height: u16) -> u16 {
-        FOOTER_SPACING_HEIGHT
+    fn footer_spacing(footer_hint_height: u16) -> u16 {
+        if footer_hint_height == 0 {
+            0
+        } else {
+            FOOTER_SPACING_HEIGHT
+        }
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
@@ -1711,10 +1715,11 @@ impl WidgetRef for ChatComposer {
         }
 
         if layout.composer_rect.height > 0
-            && let Some(cell) = buf.cell_mut((layout.composer_rect.x, layout.composer_rect.y)) {
-                cell.set_symbol("›");
-                cell.set_style(style.add_modifier(Modifier::BOLD));
-            }
+            && let Some(cell) = buf.cell_mut((layout.composer_rect.x, layout.composer_rect.y))
+        {
+            cell.set_symbol("›");
+            cell.set_style(style.add_modifier(Modifier::BOLD));
+        }
 
         let mut state = self.textarea_state.borrow_mut();
         StatefulWidgetRef::render_ref(&(&self.textarea), layout.textarea_rect, buf, &mut state);

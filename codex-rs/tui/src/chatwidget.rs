@@ -1287,6 +1287,13 @@ impl ChatWidget {
             _ => {}
         }
 
+        if key_event.kind == KeyEventKind::Press
+            && key_event.code == KeyCode::Esc
+            && self.bottom_pane.is_task_running()
+        {
+            self.halt_running_task();
+        }
+
         match key_event {
             KeyEvent {
                 code: KeyCode::Up,
@@ -2235,11 +2242,24 @@ impl ChatWidget {
 
         if self.bottom_pane.is_task_running() {
             self.bottom_pane.show_ctrl_c_quit_hint();
-            self.submit_op(Op::Interrupt);
+            self.halt_running_task();
             return;
         }
 
         self.submit_op(Op::Shutdown);
+    }
+
+    fn halt_running_task(&mut self) {
+        self.bottom_pane.clear_ctrl_c_quit_hint();
+        self.bottom_pane.set_task_running(false);
+        self.bottom_pane.set_interrupt_hint_visible(false);
+        self.running_commands.clear();
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_interrupt_hint_visible(false);
+            overlay.complete_task();
+        }
+        self.submit_op(Op::Interrupt);
+        self.request_redraw();
     }
 
     pub(crate) fn composer_is_empty(&self) -> bool {
