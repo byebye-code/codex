@@ -41,6 +41,7 @@ pub(crate) struct StatusLineOverlay {
 }
 
 impl StatusLineOverlay {
+    const RUN_PILL_TOP_MARGIN: u16 = 1;
     pub(crate) fn new(
         config: &Config,
         frame_requester: crate::tui::FrameRequester,
@@ -170,12 +171,13 @@ impl StatusLineOverlay {
         bottom_pane_area: Rect,
         has_active_view: bool,
     ) -> Option<StatusLineLayout> {
-        if has_active_view || bottom_pane_area.height < 3 {
+        let required_height = Self::RUN_PILL_TOP_MARGIN + 3; // margin + run pill + status line + min pane row
+        if has_active_view || bottom_pane_area.height < required_height {
             return None;
         }
         let run_pill_area = Rect {
             x: bottom_pane_area.x,
-            y: bottom_pane_area.y,
+            y: bottom_pane_area.y.saturating_add(Self::RUN_PILL_TOP_MARGIN),
             width: bottom_pane_area.width,
             height: 1,
         };
@@ -187,9 +189,11 @@ impl StatusLineOverlay {
         };
         let pane_area = Rect {
             x: bottom_pane_area.x,
-            y: bottom_pane_area.y + 1,
+            y: run_pill_area.y.saturating_add(run_pill_area.height),
             width: bottom_pane_area.width,
-            height: bottom_pane_area.height.saturating_sub(2),
+            height: bottom_pane_area
+                .height
+                .saturating_sub(Self::RUN_PILL_TOP_MARGIN + run_pill_area.height + 1),
         };
         Some(StatusLineLayout {
             pane_area,
@@ -367,4 +371,93 @@ pub(crate) fn set_devspace_override_for_tests(value: Option<String>) {
 #[cfg(test)]
 pub(crate) fn clear_devspace_override_for_tests() {
     *DEVSPACE_OVERRIDE.lock().unwrap() = None;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_event::AppEvent;
+    use crate::app_event_sender::AppEventSender;
+    use crate::statusline::CustomStatusLineRenderer;
+    use crate::tui::FrameRequester;
+    use codex_core::config::ConfigOverrides;
+    use codex_core::config::ConfigToml;
+    use ratatui::buffer::Buffer;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    fn overlay_for_tests() -> StatusLineOverlay {
+        let mut cfg = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            std::env::temp_dir(),
+        )
+        .expect("config");
+        cfg.tui_custom_statusline = true;
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let app_event_tx = AppEventSender::new(tx);
+        StatusLineOverlay::new(
+            &cfg,
+            FrameRequester::test_dummy(),
+            app_event_tx,
+            Some(Box::new(CustomStatusLineRenderer) as Box<dyn StatusLineRenderer>),
+        )
+        .expect("overlay")
+    }
+
+    #[test]
+    fn layout_includes_margin_above_run_pill() {
+        let overlay = overlay_for_tests();
+        let area = Rect::new(0, 0, 80, 6);
+        let layout = overlay.layout(area, false).expect("layout available");
+        assert_eq!(
+            layout.run_pill_area.y,
+            area.y + StatusLineOverlay::RUN_PILL_TOP_MARGIN,
+            "run pill should sit one row below the top margin"
+        );
+        assert_eq!(
+            layout.pane_area.y,
+            layout.run_pill_area.y + layout.run_pill_area.height,
+            "pane area should start immediately below the run pill"
+        );
+        assert_eq!(
+            layout.status_line_area.y,
+            area.y + area.height - 1,
+            "status line stays anchored to bottom row"
+        );
+    }
+
+    #[test]
+    fn render_leaves_blank_margin_row() {
+        let overlay = overlay_for_tests();
+        let area = Rect::new(0, 0, 40, 6);
+        let layout = overlay.layout(area, false).expect("layout available");
+        let mut buf = Buffer::empty(area);
+        overlay.render_run_pill(layout.run_pill_area, &mut buf);
+        let margin_y = area.y;
+        for x in area.x..area.x + area.width {
+            let cell = &buf[(x, margin_y)];
+            assert_eq!(
+                cell.symbol(),
+                " ",
+                "expected transparent margin symbol at ({x},{margin_y})"
+            );
+            let style = cell.style();
+            assert!(
+                style.bg.is_none() || style.bg == Some(ratatui::style::Color::Reset),
+                "expected default background at margin cell ({x},{margin_y}) but saw {:?}",
+                style.bg
+            );
+            assert!(
+                style.fg.is_none() || style.fg == Some(ratatui::style::Color::Reset),
+                "expected default foreground at margin cell ({x},{margin_y}) but saw {:?}",
+                style.fg
+            );
+            assert!(
+                style.underline_color.is_none()
+                    || style.underline_color == Some(ratatui::style::Color::Reset),
+                "expected default underline color at margin cell ({x},{margin_y}) but saw {:?}",
+                style.underline_color
+            );
+        }
+    }
 }

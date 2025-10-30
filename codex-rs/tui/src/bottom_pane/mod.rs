@@ -796,6 +796,47 @@ mod tests {
     }
 
     #[test]
+    fn cursor_row_matches_composer_text_row() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = BottomPane::new(BottomPaneParams {
+            app_event_tx: tx,
+            frame_requester: FrameRequester::test_dummy(),
+            has_input_focus: true,
+            enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
+            disable_paste_burst: false,
+        });
+        pane.insert_str("hello");
+
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        (&pane).render_ref(area, &mut buf);
+
+        let cursor = pane
+            .cursor_pos(area)
+            .expect("cursor position should be available");
+
+        let mut prompt_row = None;
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            if row.contains('›') {
+                prompt_row = Some((y, row));
+                break;
+            }
+        }
+        let (prompt_row_idx, prompt_row_contents) =
+            prompt_row.expect("expected composer prompt row to be rendered");
+        assert_eq!(
+            cursor.1, prompt_row_idx,
+            "cursor should be placed on same row as composer prompt: {prompt_row_contents:?}"
+        );
+    }
+
+    #[test]
     fn status_hidden_when_height_too_small() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
