@@ -160,7 +160,7 @@ impl BottomPane {
 
     fn layout(&self, area: Rect) -> [Rect; 2] {
         // At small heights, bottom pane takes the entire height.
-        let top_margin = if area.height <= 1 { 0 } else { 1 };
+        let top_margin = if area.height <= 4 { 0 } else { 1 };
 
         let area = area.inset(Insets::tlbr(top_margin, 0, 0, 0));
         if self.active_view().is_some() {

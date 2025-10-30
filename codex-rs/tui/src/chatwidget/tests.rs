@@ -52,6 +52,8 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
+use ratatui::style::Color;
+use ratatui::style::Style;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -2635,6 +2637,16 @@ fn typed_input_preserves_padding_and_margin_with_status_overlay() {
     };
     let [composer_rect, textarea_rect, popup_rect] =
         chat.bottom_pane.composer_layout_for_tests(pane_area);
+    assert!(
+        popup_rect.height >= 2,
+        "expected popup area to reserve padding and margin rows: {popup_rect:?}"
+    );
+
+    let padding_y = popup_rect.y;
+    let margin_y = padding_y.saturating_add(1);
+    let expected_padding_bg = crate::style::user_message_style()
+        .bg
+        .unwrap_or(Color::Reset);
 
     let mut composer_row = String::new();
     for x in textarea_rect.x..textarea_rect.x.saturating_add(textarea_rect.width) {
@@ -2655,11 +2667,39 @@ fn typed_input_preserves_padding_and_margin_with_status_overlay() {
         "›",
         "expected prompt glyph to remain on composer row"
     );
-
-    assert!(
-        popup_rect.height > 0,
-        "expected popup rect to include bottom margin row after typing"
-    );
+    for x in popup_rect.x..popup_rect.x.saturating_add(popup_rect.width) {
+        let padding_cell = &buf[(x, padding_y)];
+        assert_eq!(
+            padding_cell.symbol().chars().next().unwrap_or(' '),
+            ' ',
+            "expected composer padding row to contain spaces at ({x},{padding_y})"
+        );
+        let padding_style = padding_cell.style();
+        assert_eq!(
+            padding_style.bg.unwrap_or(Color::Reset),
+            expected_padding_bg,
+            "expected composer padding row to match composer background color"
+        );
+        assert!(
+            padding_style.add_modifier.is_empty(),
+            "expected composer padding row to avoid additional text modifiers"
+        );
+        let margin_cell = &buf[(x, margin_y)];
+        assert_eq!(
+            margin_cell.symbol().chars().next().unwrap_or(' '),
+            ' ',
+            "expected margin row to be blank at ({x},{margin_y})"
+        );
+        assert_eq!(
+            margin_cell.style().bg.unwrap_or(Color::Reset),
+            Style::default().bg.unwrap_or(Color::Reset),
+            "expected margin row to use transparent background"
+        );
+        assert!(
+            margin_cell.style().add_modifier.is_empty(),
+            "expected margin row to avoid additional text modifiers"
+        );
+    }
 
     let bottom_padding_y = composer_rect
         .y

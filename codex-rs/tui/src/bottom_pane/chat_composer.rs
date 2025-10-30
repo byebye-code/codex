@@ -169,7 +169,7 @@ impl ChatComposer {
         const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
         self.textarea
             .desired_height(width.saturating_sub(COLS_WITH_MARGIN))
-            + 2
+            + 3
             + match &self.active_popup {
                 ActivePopup::None => footer_total_height,
                 ActivePopup::Command(c) => c.calculate_required_height(width),
@@ -178,26 +178,35 @@ impl ChatComposer {
     }
 
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
+        let padding_height: u16 = 1;
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
             .unwrap_or_else(|| footer_height(footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let footer_total_height = footer_hint_height + footer_spacing + BOTTOM_MARGIN_HEIGHT;
-        let popup_constraint = match &self.active_popup {
+        let popup_min_height = match &self.active_popup {
             ActivePopup::Command(popup) => {
-                Constraint::Max(popup.calculate_required_height(area.width))
+                padding_height
+                    + BOTTOM_MARGIN_HEIGHT
+                    + popup.calculate_required_height(area.width).max(1)
             }
-            ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
-            ActivePopup::None => Constraint::Max(footer_total_height),
+            ActivePopup::File(popup) => {
+                padding_height + BOTTOM_MARGIN_HEIGHT + popup.calculate_required_height().max(1)
+            }
+            ActivePopup::None => {
+                padding_height + BOTTOM_MARGIN_HEIGHT + footer_hint_height + footer_spacing
+            }
         };
+        let popup_constraint = Constraint::Min(popup_min_height);
         let mut area = area;
-        if area.height > BOTTOM_MARGIN_HEIGHT + 1 {
+        let composer_min_height: u16 = 1;
+        let required_height = composer_min_height + popup_min_height;
+        if area.height > required_height {
             area.height -= 1;
             area.y += 1;
         }
         let [composer_rect, popup_rect] =
-            Layout::vertical([Constraint::Min(1), popup_constraint]).areas(area);
+            Layout::vertical([Constraint::Min(composer_min_height), popup_constraint]).areas(area);
         let mut textarea_rect = composer_rect;
         textarea_rect.width = textarea_rect.width.saturating_sub(
             LIVE_PREFIX_COLS + 1, /* keep a one-column right margin for wrapping */
@@ -1546,24 +1555,68 @@ impl ChatComposer {
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         let [composer_rect, textarea_rect, popup_rect] = self.layout_areas(area);
-        let (_, footer_area) = if popup_rect.height > 0 {
-            let margin_height = BOTTOM_MARGIN_HEIGHT.min(popup_rect.height);
-            let margin_rect = Rect {
+        let (padding_rect, margin_rect, footer_area) = if popup_rect.height > 0 {
+            let padding_height = 1.min(popup_rect.height);
+            let padding_rect = Rect {
                 x: popup_rect.x,
                 y: popup_rect.y,
                 width: popup_rect.width,
-                height: margin_height,
+                height: padding_height,
             };
+            let remaining_after_padding = popup_rect.height.saturating_sub(padding_height);
+            let margin_height = BOTTOM_MARGIN_HEIGHT.min(remaining_after_padding);
+            let margin_rect = if margin_height > 0 {
+                Some(Rect {
+                    x: popup_rect.x,
+                    y: padding_rect.y.saturating_add(padding_height),
+                    width: popup_rect.width,
+                    height: margin_height,
+                })
+            } else {
+                None
+            };
+            let footer_start_y = margin_rect
+                .as_ref()
+                .map_or(padding_rect.y.saturating_add(padding_height), |rect| {
+                    rect.y.saturating_add(rect.height)
+                });
+            let footer_height = popup_rect
+                .height
+                .saturating_sub(padding_height + margin_height);
             let footer_area = Rect {
                 x: popup_rect.x,
-                y: popup_rect.y.saturating_add(margin_height),
+                y: footer_start_y,
                 width: popup_rect.width,
-                height: popup_rect.height.saturating_sub(margin_height),
+                height: footer_height,
             };
-            (Some(margin_rect), footer_area)
+            (Some(padding_rect), margin_rect, footer_area)
         } else {
-            (None, popup_rect)
+            (None, None, popup_rect)
         };
+
+        if let Some(padding_rect) = padding_rect {
+            let style = user_message_style();
+            let padding_bottom = padding_rect.y.saturating_add(padding_rect.height);
+            for y in padding_rect.y..padding_bottom {
+                for x in padding_rect.x..padding_rect.x.saturating_add(padding_rect.width) {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol(" ");
+                        cell.set_style(style);
+                    }
+                }
+            }
+        }
+        if let Some(margin_rect) = margin_rect {
+            let margin_bottom = margin_rect.y.saturating_add(margin_rect.height);
+            for y in margin_rect.y..margin_bottom {
+                for x in margin_rect.x..margin_rect.x.saturating_add(margin_rect.width) {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol(" ");
+                        cell.set_style(Style::default());
+                    }
+                }
+            }
+        }
 
         match &self.active_popup {
             ActivePopup::Command(popup) => {
@@ -1624,18 +1677,6 @@ impl WidgetRef for ChatComposer {
         block_rect.y = composer_rect.y.saturating_sub(1);
         block_rect.height = composer_rect.height.saturating_add(1);
         Block::default().style(style).render_ref(block_rect, buf);
-        let bottom_padding_y = composer_rect
-            .y
-            .saturating_add(composer_rect.height)
-            .saturating_sub(1);
-        if composer_rect.height > 0 && bottom_padding_y < area.y.saturating_add(area.height) {
-            for x in composer_rect.x..composer_rect.x.saturating_add(composer_rect.width) {
-                if let Some(cell) = buf.cell_mut((x, bottom_padding_y)) {
-                    cell.set_symbol(" ");
-                    cell.set_style(style);
-                }
-            }
-        }
         buf.set_span(
             composer_rect.x,
             composer_rect.y,
