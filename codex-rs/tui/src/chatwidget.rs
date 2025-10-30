@@ -1049,7 +1049,15 @@ impl ChatWidget {
     }
 
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
-        let bottom_min = self.bottom_pane.desired_height(area.width).min(area.height);
+        let mut bottom_min = self.bottom_pane.desired_height(area.width);
+        if self
+            .status_overlay
+            .as_ref()
+            .is_some_and(|_| !self.bottom_pane.has_active_view())
+        {
+            bottom_min = bottom_min.saturating_add(StatusLineOverlay::reserved_rows());
+        }
+        let bottom_min = bottom_min.min(area.height);
         let remaining = area.height.saturating_sub(bottom_min);
 
         let active_desired = self
@@ -1236,7 +1244,15 @@ impl ChatWidget {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
-        self.bottom_pane.desired_height(width)
+        let mut height = self.bottom_pane.desired_height(width);
+        if self
+            .status_overlay
+            .as_ref()
+            .is_some_and(|_| !self.bottom_pane.has_active_view())
+        {
+            height = height.saturating_add(StatusLineOverlay::reserved_rows());
+        }
+        height
             + self
                 .active_cell
                 .as_ref()

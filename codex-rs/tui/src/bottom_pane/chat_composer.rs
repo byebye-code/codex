@@ -3,15 +3,13 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Constraint;
-use ratatui::layout::Layout;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
 
@@ -118,8 +116,40 @@ enum ActivePopup {
     File(FileSearchPopup),
 }
 
-const FOOTER_SPACING_HEIGHT: u16 = 1;
+// Explicit layout constants keep the composer structure easy to follow.
+const TOP_PADDING_HEIGHT: u16 = 1;
+const BOTTOM_PADDING_HEIGHT: u16 = 1;
 const BOTTOM_MARGIN_HEIGHT: u16 = 1;
+const TEXTAREA_RIGHT_MARGIN: u16 = 1;
+const FOOTER_SPACING_HEIGHT: u16 = 1;
+
+#[derive(Clone, Copy, Debug)]
+struct ComposerRenderLayout {
+    top_padding: Rect,
+    composer_rect: Rect,
+    textarea_rect: Rect,
+    footer_area: Rect,
+    bottom_margin: Rect,
+    popup_rect: Rect,
+    footer_hint_height: u16,
+    footer_spacing: u16,
+}
+
+fn fill_rect_with_style(buf: &mut Buffer, rect: Rect, style: Style) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let bottom = rect.y.saturating_add(rect.height);
+    let right = rect.x.saturating_add(rect.width);
+    for y in rect.y..bottom {
+        for x in rect.x..right {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(style);
+            }
+        }
+    }
+}
 
 impl ChatComposer {
     pub fn new(
@@ -160,59 +190,123 @@ impl ChatComposer {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
+        let text_width = width.saturating_sub(LIVE_PREFIX_COLS + TEXTAREA_RIGHT_MARGIN);
+        let text_height = self.textarea.desired_height(text_width);
+
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
             .unwrap_or_else(|| footer_height(footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let footer_total_height = footer_hint_height + footer_spacing + BOTTOM_MARGIN_HEIGHT;
-        const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
-        self.textarea
-            .desired_height(width.saturating_sub(COLS_WITH_MARGIN))
-            + 3
-            + match &self.active_popup {
-                ActivePopup::None => footer_total_height,
-                ActivePopup::Command(c) => c.calculate_required_height(width),
-                ActivePopup::File(c) => c.calculate_required_height(),
+        let footer_total_height = match &self.active_popup {
+            ActivePopup::None => footer_hint_height + footer_spacing,
+            ActivePopup::Command(c) => c.calculate_required_height(width).max(1),
+            ActivePopup::File(c) => c.calculate_required_height().max(1),
+        };
+
+        text_height
+            + TOP_PADDING_HEIGHT
+            + BOTTOM_PADDING_HEIGHT
+            + BOTTOM_MARGIN_HEIGHT
+            + footer_total_height
+    }
+
+    fn render_layout(&self, area: Rect) -> ComposerRenderLayout {
+        let mut footer_hint_height = 0;
+        let mut footer_spacing = 0;
+        let footer_reserved_height = match &self.active_popup {
+            ActivePopup::Command(popup) => popup.calculate_required_height(area.width).max(1),
+            ActivePopup::File(popup) => popup.calculate_required_height().max(1),
+            ActivePopup::None => {
+                footer_hint_height = self
+                    .custom_footer_height()
+                    .unwrap_or_else(|| footer_height(self.footer_props()));
+                footer_spacing = Self::footer_spacing(footer_hint_height);
+                footer_hint_height + footer_spacing
             }
+        };
+
+        let available_height = area.height;
+        let mut text_height = available_height
+            .saturating_sub(
+                TOP_PADDING_HEIGHT
+                    + BOTTOM_PADDING_HEIGHT
+                    + BOTTOM_MARGIN_HEIGHT
+                    + footer_reserved_height,
+            )
+            .max(1);
+        let footer_height = footer_reserved_height;
+        let bottom_padding_height = BOTTOM_PADDING_HEIGHT;
+        let bottom_margin_height = BOTTOM_MARGIN_HEIGHT;
+
+        let used_height = TOP_PADDING_HEIGHT
+            + text_height
+            + bottom_padding_height
+            + bottom_margin_height
+            + footer_height;
+        if used_height < available_height {
+            text_height += available_height - used_height;
+        }
+
+        let mut cursor = area.y;
+        let top_padding = Rect::new(area.x, cursor, area.width, TOP_PADDING_HEIGHT);
+        cursor = cursor.saturating_add(TOP_PADDING_HEIGHT);
+
+        let text_start = cursor;
+        let textarea_width = area
+            .width
+            .saturating_sub(LIVE_PREFIX_COLS + TEXTAREA_RIGHT_MARGIN);
+        let textarea_rect = Rect::new(
+            area.x.saturating_add(LIVE_PREFIX_COLS),
+            text_start,
+            textarea_width,
+            text_height,
+        );
+        cursor = cursor.saturating_add(text_height);
+
+        let bottom_padding_start = cursor;
+        cursor = cursor.saturating_add(bottom_padding_height);
+
+        let footer_area = Rect::new(area.x, cursor, area.width, footer_height);
+        cursor = cursor.saturating_add(footer_height);
+
+        let bottom_margin = Rect::new(area.x, cursor, area.width, bottom_margin_height);
+
+        let composer_rect = Rect::new(
+            area.x,
+            text_start,
+            area.width,
+            text_height.saturating_add(bottom_padding_height),
+        );
+
+        let popup_rect = Rect::new(
+            area.x,
+            bottom_padding_start,
+            area.width,
+            bottom_padding_height
+                .saturating_add(footer_height)
+                .saturating_add(bottom_margin_height),
+        );
+
+        ComposerRenderLayout {
+            top_padding,
+            composer_rect,
+            textarea_rect,
+            footer_area,
+            bottom_margin,
+            popup_rect,
+            footer_hint_height,
+            footer_spacing,
+        }
     }
 
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
-        let padding_height: u16 = 1;
-        let footer_props = self.footer_props();
-        let footer_hint_height = self
-            .custom_footer_height()
-            .unwrap_or_else(|| footer_height(footer_props));
-        let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let popup_min_height = match &self.active_popup {
-            ActivePopup::Command(popup) => {
-                padding_height
-                    + BOTTOM_MARGIN_HEIGHT
-                    + popup.calculate_required_height(area.width).max(1)
-            }
-            ActivePopup::File(popup) => {
-                padding_height + BOTTOM_MARGIN_HEIGHT + popup.calculate_required_height().max(1)
-            }
-            ActivePopup::None => {
-                padding_height + BOTTOM_MARGIN_HEIGHT + footer_hint_height + footer_spacing
-            }
-        };
-        let popup_constraint = Constraint::Min(popup_min_height);
-        let mut area = area;
-        let composer_min_height: u16 = 1;
-        let required_height = composer_min_height + popup_min_height;
-        if area.height > required_height {
-            area.height -= 1;
-            area.y += 1;
-        }
-        let [composer_rect, popup_rect] =
-            Layout::vertical([Constraint::Min(composer_min_height), popup_constraint]).areas(area);
-        let mut textarea_rect = composer_rect;
-        textarea_rect.width = textarea_rect.width.saturating_sub(
-            LIVE_PREFIX_COLS + 1, /* keep a one-column right margin for wrapping */
-        );
-        textarea_rect.x = textarea_rect.x.saturating_add(LIVE_PREFIX_COLS);
-        [composer_rect, textarea_rect, popup_rect]
+        let layout = self.render_layout(area);
+        [
+            layout.composer_rect,
+            layout.textarea_rect,
+            layout.popup_rect,
+        ]
     }
 
     #[cfg(test)]
@@ -1554,141 +1648,80 @@ impl ChatComposer {
 
 impl WidgetRef for ChatComposer {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let [composer_rect, textarea_rect, popup_rect] = self.layout_areas(area);
-        let (padding_rect, margin_rect, footer_area) = if popup_rect.height > 0 {
-            let padding_height = 1.min(popup_rect.height);
-            let padding_rect = Rect {
-                x: popup_rect.x,
-                y: popup_rect.y,
-                width: popup_rect.width,
-                height: padding_height,
-            };
-            let remaining_after_padding = popup_rect.height.saturating_sub(padding_height);
-            let margin_height = BOTTOM_MARGIN_HEIGHT.min(remaining_after_padding);
-            let margin_rect = if margin_height > 0 {
-                Some(Rect {
-                    x: popup_rect.x,
-                    y: padding_rect.y.saturating_add(padding_height),
-                    width: popup_rect.width,
-                    height: margin_height,
-                })
-            } else {
-                None
-            };
-            let footer_start_y = margin_rect
-                .as_ref()
-                .map_or(padding_rect.y.saturating_add(padding_height), |rect| {
-                    rect.y.saturating_add(rect.height)
-                });
-            let footer_height = popup_rect
-                .height
-                .saturating_sub(padding_height + margin_height);
-            let footer_area = Rect {
-                x: popup_rect.x,
-                y: footer_start_y,
-                width: popup_rect.width,
-                height: footer_height,
-            };
-            (Some(padding_rect), margin_rect, footer_area)
-        } else {
-            (None, None, popup_rect)
-        };
+        let layout = self.render_layout(area);
+        let style = user_message_style();
 
-        if let Some(padding_rect) = padding_rect {
-            let style = user_message_style();
-            let padding_bottom = padding_rect.y.saturating_add(padding_rect.height);
-            for y in padding_rect.y..padding_bottom {
-                for x in padding_rect.x..padding_rect.x.saturating_add(padding_rect.width) {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_symbol(" ");
-                        cell.set_style(style);
-                    }
-                }
-            }
-        }
-        if let Some(margin_rect) = margin_rect {
-            let margin_bottom = margin_rect.y.saturating_add(margin_rect.height);
-            for y in margin_rect.y..margin_bottom {
-                for x in margin_rect.x..margin_rect.x.saturating_add(margin_rect.width) {
-                    if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_symbol(" ");
-                        cell.set_style(Style::default());
-                    }
-                }
-            }
-        }
+        // Top padding mirrors the bottom padding so the composer is framed evenly.
+        fill_rect_with_style(buf, layout.top_padding, style);
+        fill_rect_with_style(buf, layout.composer_rect, style);
+
+        // Footer and margin rows start blank so each state can paint what it needs.
+        fill_rect_with_style(buf, layout.footer_area, Style::default());
+        fill_rect_with_style(buf, layout.bottom_margin, Style::default());
 
         match &self.active_popup {
             ActivePopup::Command(popup) => {
-                popup.render_ref(footer_area, buf);
+                popup.render_ref(layout.footer_area, buf);
             }
             ActivePopup::File(popup) => {
-                popup.render_ref(footer_area, buf);
+                popup.render_ref(layout.footer_area, buf);
             }
             ActivePopup::None => {
-                let footer_props = self.footer_props();
-                let custom_height = self.custom_footer_height();
-                let footer_hint_height =
-                    custom_height.unwrap_or_else(|| footer_height(footer_props));
-                let footer_spacing = Self::footer_spacing(footer_hint_height);
-                let hint_rect = if footer_hint_height > 0
-                    && footer_area.height >= footer_hint_height
-                {
-                    if footer_spacing > 0
-                        && footer_area.height >= footer_spacing.saturating_add(footer_hint_height)
-                    {
-                        let [_, hint_rect] = Layout::vertical([
-                            Constraint::Length(footer_spacing),
-                            Constraint::Length(footer_hint_height),
-                        ])
-                        .areas(footer_area);
-                        hint_rect
-                    } else {
-                        footer_area
-                    }
-                } else {
-                    footer_area
-                };
-                if let Some(items) = self.footer_hint_override.as_ref() {
-                    if !items.is_empty() {
-                        let mut spans = Vec::with_capacity(items.len() * 4);
-                        for (idx, (key, label)) in items.iter().enumerate() {
-                            spans.push(" ".into());
-                            spans.push(Span::styled(key.clone(), Style::default().bold()));
-                            spans.push(format!(" {label}").into());
-                            if idx + 1 != items.len() {
-                                spans.push("   ".into());
+                if layout.footer_area.height > 0 {
+                    let footer_props = self.footer_props();
+                    let footer_hint_height =
+                        layout.footer_hint_height.min(layout.footer_area.height);
+                    let spacing_height = layout
+                        .footer_spacing
+                        .min(layout.footer_area.height.saturating_sub(footer_hint_height));
+                    let available_for_hint =
+                        layout.footer_area.height.saturating_sub(spacing_height);
+                    if footer_hint_height > 0 && available_for_hint > 0 {
+                        let hint_height = footer_hint_height.min(available_for_hint);
+                        let hint_rect = Rect::new(
+                            layout.footer_area.x,
+                            layout.footer_area.y.saturating_add(spacing_height),
+                            layout.footer_area.width,
+                            hint_height,
+                        );
+                        if let Some(items) = self.footer_hint_override.as_ref() {
+                            if !items.is_empty() {
+                                let mut spans = Vec::with_capacity(items.len() * 4);
+                                for (idx, (key, label)) in items.iter().enumerate() {
+                                    spans.push(" ".into());
+                                    spans.push(Span::styled(key.clone(), Style::default().bold()));
+                                    spans.push(format!(" {label}").into());
+                                    if idx + 1 != items.len() {
+                                        spans.push("   ".into());
+                                    }
+                                }
+                                let mut custom_rect = hint_rect;
+                                if custom_rect.width > 2 {
+                                    custom_rect.x += 2;
+                                    custom_rect.width = custom_rect.width.saturating_sub(2);
+                                }
+                                Line::from(spans).render_ref(custom_rect, buf);
                             }
+                        } else {
+                            render_footer(hint_rect, buf, footer_props);
                         }
-                        let mut custom_rect = hint_rect;
-                        if custom_rect.width > 2 {
-                            custom_rect.x += 2;
-                            custom_rect.width = custom_rect.width.saturating_sub(2);
-                        }
-                        Line::from(spans).render_ref(custom_rect, buf);
                     }
-                } else {
-                    render_footer(hint_rect, buf, footer_props);
                 }
             }
         }
-        let style = user_message_style();
-        let mut block_rect = composer_rect;
-        block_rect.y = composer_rect.y.saturating_sub(1);
-        block_rect.height = composer_rect.height.saturating_add(1);
-        Block::default().style(style).render_ref(block_rect, buf);
-        buf.set_span(
-            composer_rect.x,
-            composer_rect.y,
-            &"›".bold(),
-            composer_rect.width,
-        );
+
+        if layout.composer_rect.height > 0
+            && let Some(cell) = buf.cell_mut((layout.composer_rect.x, layout.composer_rect.y)) {
+                cell.set_symbol("›");
+                cell.set_style(style.add_modifier(Modifier::BOLD));
+            }
 
         let mut state = self.textarea_state.borrow_mut();
-        StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
+        StatefulWidgetRef::render_ref(&(&self.textarea), layout.textarea_rect, buf, &mut state);
         if self.textarea.text().is_empty() {
             let placeholder = Span::from(self.placeholder_text.as_str()).dim();
-            Line::from(vec![placeholder]).render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
+            Line::from(vec![placeholder])
+                .render_ref(layout.textarea_rect.inner(Margin::new(0, 0)), buf);
         }
     }
 }

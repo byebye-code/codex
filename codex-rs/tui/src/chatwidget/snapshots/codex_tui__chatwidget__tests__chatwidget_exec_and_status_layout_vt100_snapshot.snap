@@ -10,6 +10,9 @@ expression: term.backend().vt100().screen().contents()
     Read diff_render.rs
 
  󰔟 0s ◦ Investigating rendering code 
+
+
+
 › Summarize recent commits
 
 

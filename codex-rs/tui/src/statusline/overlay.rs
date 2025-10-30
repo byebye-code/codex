@@ -41,7 +41,17 @@ pub(crate) struct StatusLineOverlay {
 }
 
 impl StatusLineOverlay {
-    const RUN_PILL_TOP_MARGIN: u16 = 1;
+    const MARGIN_ABOVE_PILL: u16 = 1;
+    const MARGIN_ABOVE_PANE: u16 = 1;
+    const MARGIN_BELOW_PANE: u16 = 0;
+    const RUN_PILL_HEIGHT: u16 = 1;
+    const STATUS_LINE_HEIGHT: u16 = 1;
+    const MIN_PANE_CONTENT_HEIGHT: u16 = 4;
+    const RESERVED_ROWS: u16 = Self::MARGIN_ABOVE_PILL
+        + Self::RUN_PILL_HEIGHT
+        + Self::MARGIN_ABOVE_PANE
+        + Self::MARGIN_BELOW_PANE
+        + Self::STATUS_LINE_HEIGHT;
     pub(crate) fn new(
         config: &Config,
         frame_requester: crate::tui::FrameRequester,
@@ -166,35 +176,50 @@ impl StatusLineOverlay {
         self.state.set_queued_messages(messages);
     }
 
+    pub(crate) const fn reserved_rows() -> u16 {
+        Self::RESERVED_ROWS
+    }
+
     pub(crate) fn layout(
         &self,
         bottom_pane_area: Rect,
         has_active_view: bool,
     ) -> Option<StatusLineLayout> {
-        let required_height = Self::RUN_PILL_TOP_MARGIN + 3; // margin + run pill + status line + min pane row
-        if has_active_view || bottom_pane_area.height < required_height {
+        let reserved_height = Self::RESERVED_ROWS;
+        let minimum_height = reserved_height + Self::MIN_PANE_CONTENT_HEIGHT;
+        if has_active_view || bottom_pane_area.height < minimum_height {
             return None;
         }
+
+        let mut y_cursor = bottom_pane_area.y.saturating_add(Self::MARGIN_ABOVE_PILL);
         let run_pill_area = Rect {
             x: bottom_pane_area.x,
-            y: bottom_pane_area.y.saturating_add(Self::RUN_PILL_TOP_MARGIN),
+            y: y_cursor,
             width: bottom_pane_area.width,
-            height: 1,
+            height: Self::RUN_PILL_HEIGHT,
         };
-        let status_line_area = Rect {
-            x: bottom_pane_area.x,
-            y: bottom_pane_area.y + bottom_pane_area.height - 1,
-            width: bottom_pane_area.width,
-            height: 1,
-        };
+
+        y_cursor = y_cursor
+            .saturating_add(Self::RUN_PILL_HEIGHT)
+            .saturating_add(Self::MARGIN_ABOVE_PANE);
+        let pane_height = bottom_pane_area.height.saturating_sub(reserved_height);
         let pane_area = Rect {
             x: bottom_pane_area.x,
-            y: run_pill_area.y.saturating_add(run_pill_area.height),
+            y: y_cursor,
             width: bottom_pane_area.width,
-            height: bottom_pane_area
-                .height
-                .saturating_sub(Self::RUN_PILL_TOP_MARGIN + run_pill_area.height + 1),
+            height: pane_height,
         };
+
+        let status_line_area = Rect {
+            x: bottom_pane_area.x,
+            y: bottom_pane_area
+                .y
+                .saturating_add(bottom_pane_area.height)
+                .saturating_sub(Self::STATUS_LINE_HEIGHT),
+            width: bottom_pane_area.width,
+            height: Self::STATUS_LINE_HEIGHT,
+        };
+
         Some(StatusLineLayout {
             pane_area,
             run_pill_area,
@@ -411,13 +436,15 @@ mod tests {
         let layout = overlay.layout(area, false).expect("layout available");
         assert_eq!(
             layout.run_pill_area.y,
-            area.y + StatusLineOverlay::RUN_PILL_TOP_MARGIN,
+            area.y + StatusLineOverlay::MARGIN_ABOVE_PILL,
             "run pill should sit one row below the top margin"
         );
         assert_eq!(
             layout.pane_area.y,
-            layout.run_pill_area.y + layout.run_pill_area.height,
-            "pane area should start immediately below the run pill"
+            layout.run_pill_area.y
+                + layout.run_pill_area.height
+                + StatusLineOverlay::MARGIN_ABOVE_PANE,
+            "pane area should start after the pill-to-pane margin"
         );
         assert_eq!(
             layout.status_line_area.y,

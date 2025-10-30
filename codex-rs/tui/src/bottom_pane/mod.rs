@@ -52,6 +52,10 @@ pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::InputResult;
 use codex_protocol::custom_prompts::CustomPrompt;
 
+// Layout constants make the margin and inter-section spacing explicit.
+const TOP_MARGIN_HEIGHT: u16 = 1;
+const STATUS_SPACING_HEIGHT: u16 = 1;
+
 use crate::status_indicator_widget::StatusIndicatorWidget;
 pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
@@ -131,7 +135,7 @@ impl BottomPane {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
-        let top_margin = 1;
+        let top_margin = TOP_MARGIN_HEIGHT;
 
         // Base height depends on whether a modal/overlay is active.
         let base = match self.active_view().as_ref() {
@@ -145,7 +149,7 @@ impl BottomPane {
                 let spacing_height = if status_height == 0 && queue_height == 0 {
                     0
                 } else {
-                    1
+                    STATUS_SPACING_HEIGHT
                 };
                 self.composer
                     .desired_height(width)
@@ -160,7 +164,13 @@ impl BottomPane {
 
     fn layout(&self, area: Rect) -> [Rect; 2] {
         // At small heights, bottom pane takes the entire height.
-        let top_margin = if area.height <= 4 { 0 } else { 1 };
+        // Prefer to keep a blank row above the composer, but drop it when the
+        // terminal is extremely short so the composer itself stays visible.
+        let top_margin = if area.height <= TOP_MARGIN_HEIGHT.saturating_add(3) {
+            0
+        } else {
+            TOP_MARGIN_HEIGHT
+        };
 
         let area = area.inset(Insets::tlbr(top_margin, 0, 0, 0));
         if self.active_view().is_some() {
@@ -181,7 +191,11 @@ impl BottomPane {
 
         let [status_area, _, content_area] = Layout::vertical([
             Constraint::Length(combined_height),
-            Constraint::Length(if combined_height == 0 { 0 } else { 1 }),
+            Constraint::Length(if combined_height == 0 {
+                0
+            } else {
+                STATUS_SPACING_HEIGHT
+            }),
             Constraint::Min(1),
         ])
         .areas(area);
