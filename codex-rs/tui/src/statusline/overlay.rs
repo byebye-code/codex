@@ -42,11 +42,12 @@ pub(crate) struct StatusLineOverlay {
 
 impl StatusLineOverlay {
     const MARGIN_ABOVE_PILL: u16 = 1;
-    const MARGIN_ABOVE_PANE: u16 = 0;
-    const MARGIN_BELOW_PANE: u16 = 0;
+    const MARGIN_ABOVE_PANE: u16 = 1;
+    const MARGIN_BELOW_PANE: u16 = 1;
     const RUN_PILL_HEIGHT: u16 = 1;
     const STATUS_LINE_HEIGHT: u16 = 1;
-    const MIN_PANE_CONTENT_HEIGHT: u16 = 4;
+    // Minimum pane content reduced by 1 since BottomPane no longer adds TOP_MARGIN
+    const MIN_PANE_CONTENT_HEIGHT: u16 = 3;
     const RESERVED_ROWS: u16 = Self::MARGIN_ABOVE_PILL
         + Self::RUN_PILL_HEIGHT
         + Self::MARGIN_ABOVE_PANE
@@ -432,7 +433,7 @@ mod tests {
     #[test]
     fn layout_includes_margin_above_run_pill() {
         let overlay = overlay_for_tests();
-        let area = Rect::new(0, 0, 80, 6);
+        let area = Rect::new(0, 0, 80, 10);
         let layout = overlay.layout(area, false).expect("layout available");
         assert_eq!(
             layout.run_pill_area.y,
@@ -456,7 +457,7 @@ mod tests {
     #[test]
     fn render_leaves_blank_margin_row() {
         let overlay = overlay_for_tests();
-        let area = Rect::new(0, 0, 40, 6);
+        let area = Rect::new(0, 0, 40, 10);
         let layout = overlay.layout(area, false).expect("layout available");
         let mut buf = Buffer::empty(area);
         overlay.render_run_pill(layout.run_pill_area, &mut buf);

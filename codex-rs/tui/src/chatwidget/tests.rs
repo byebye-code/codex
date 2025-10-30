@@ -2665,8 +2665,8 @@ fn typed_input_preserves_padding_and_margin_with_status_overlay() {
     let [composer_rect, textarea_rect, popup_rect] =
         chat.bottom_pane.composer_layout_for_tests(pane_area);
     assert!(
-        popup_rect.height >= 2,
-        "expected popup area to reserve padding and margin rows: {popup_rect:?}"
+        popup_rect.height >= 1,
+        "expected popup area to reserve at least padding row: {popup_rect:?}"
     );
 
     let padding_y = popup_rect.y;

@@ -3,8 +3,6 @@ use std::path::PathBuf;
 
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::queued_user_messages::QueuedUserMessages;
-use crate::render::Insets;
-use crate::render::RectExt;
 use crate::render::renderable::Renderable as _;
 use crate::tui::FrameRequester;
 use bottom_pane_view::BottomPaneView;
@@ -53,7 +51,6 @@ pub(crate) use chat_composer::InputResult;
 use codex_protocol::custom_prompts::CustomPrompt;
 
 // Layout constants make the margin and inter-section spacing explicit.
-const TOP_MARGIN_HEIGHT: u16 = 1;
 const STATUS_SPACING_HEIGHT: u16 = 1;
 
 use crate::status_indicator_widget::StatusIndicatorWidget;
@@ -135,10 +132,8 @@ impl BottomPane {
     }
 
     pub fn desired_height(&self, width: u16) -> u16 {
-        let top_margin = TOP_MARGIN_HEIGHT;
-
         // Base height depends on whether a modal/overlay is active.
-        let base = match self.active_view().as_ref() {
+        match self.active_view().as_ref() {
             Some(view) => view.desired_height(width),
             None => {
                 let status_height = self
@@ -157,22 +152,12 @@ impl BottomPane {
                     .saturating_add(status_height)
                     .saturating_add(queue_height)
             }
-        };
-        // Account for bottom padding rows. Top spacing is handled in layout().
-        base.saturating_add(top_margin)
+        }
     }
 
     fn layout(&self, area: Rect) -> [Rect; 2] {
-        // At small heights, bottom pane takes the entire height.
-        // Prefer to keep a blank row above the composer, but drop it when the
-        // terminal is extremely short so the composer itself stays visible.
-        let top_margin = if area.height <= TOP_MARGIN_HEIGHT.saturating_add(3) {
-            0
-        } else {
-            TOP_MARGIN_HEIGHT
-        };
-
-        let area = area.inset(Insets::tlbr(top_margin, 0, 0, 0));
+        // No top margin needed - StatusLineOverlay provides MARGIN_ABOVE_PANE.
+        // This keeps the spacing consistent and avoids duplicate margins.
         if self.active_view().is_some() {
             return [Rect::ZERO, area];
         }
@@ -725,13 +710,13 @@ mod tests {
         let area = Rect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);
         (&pane).render_ref(area, &mut buf);
-        let mut row1 = String::new();
+        let mut row0 = String::new();
         for x in 0..area.width {
-            row1.push(buf[(x, 1)].symbol().chars().next().unwrap_or(' '));
+            row0.push(buf[(x, 0)].symbol().chars().next().unwrap_or(' '));
         }
         assert!(
-            row1.contains("Working"),
-            "expected Working header after denial on row 1: {row1:?}"
+            row0.contains("Working"),
+            "expected Working header after denial on row 0: {row0:?}"
         );
 
         // Composer placeholder should be visible somewhere below.
@@ -778,7 +763,7 @@ mod tests {
 
         let mut row0 = String::new();
         for x in 0..area.width {
-            row0.push(buf[(x, 1)].symbol().chars().next().unwrap_or(' '));
+            row0.push(buf[(x, 0)].symbol().chars().next().unwrap_or(' '));
         }
         assert!(
             row0.contains("Working"),

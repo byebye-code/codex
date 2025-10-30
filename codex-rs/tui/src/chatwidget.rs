@@ -2241,8 +2241,8 @@ impl ChatWidget {
         }
 
         if self.bottom_pane.is_task_running() {
-            self.bottom_pane.show_ctrl_c_quit_hint();
             self.halt_running_task();
+            self.bottom_pane.show_ctrl_c_quit_hint();
             return;
         }
 

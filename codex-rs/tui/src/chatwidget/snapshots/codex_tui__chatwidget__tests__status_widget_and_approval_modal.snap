@@ -1,9 +1,7 @@
 ---
 source: tui/src/chatwidget/tests.rs
-assertion_line: 1548
 expression: terminal.backend()
 ---
-"                                                                                "
 "                                                                                "
 "  Would you like to run the following command?                                  "
 "                                                                                "
