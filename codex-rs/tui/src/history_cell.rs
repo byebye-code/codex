@@ -11,6 +11,7 @@ use crate::markdown::append_markdown;
 use crate::render::line_utils::line_to_static;
 use crate::render::line_utils::prefix_lines;
 use crate::render::line_utils::push_owned_lines;
+use crate::render::renderable::Renderable;
 use crate::style::user_message_style;
 use crate::text_formatting::format_and_truncate_tool_result;
 use crate::text_formatting::truncate_text;
@@ -23,8 +24,8 @@ use crate::wrapping::word_wrap_lines;
 use base64::Engine;
 use codex_common::format_env_display::format_env_display;
 use codex_core::config::Config;
-use codex_core::config_types::McpServerTransportConfig;
-use codex_core::config_types::ReasoningSummaryFormat;
+use codex_core::config::types::McpServerTransportConfig;
+use codex_core::config::types::ReasoningSummaryFormat;
 use codex_core::protocol::FileChange;
 use codex_core::protocol::McpAuthStatus;
 use codex_core::protocol::McpInvocation;
@@ -45,7 +46,6 @@ use ratatui::style::Style;
 use ratatui::style::Styled;
 use ratatui::style::Stylize;
 use ratatui::widgets::Paragraph;
-use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 use std::any::Any;
 use std::collections::HashMap;
@@ -96,6 +96,24 @@ pub(crate) trait HistoryCell: std::fmt::Debug + Send + Sync + Any {
 
     fn is_stream_continuation(&self) -> bool {
         false
+    }
+}
+
+impl Renderable for Box<dyn HistoryCell> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let lines = self.display_lines(area.width);
+        let y = if area.height == 0 {
+            0
+        } else {
+            let overflow = lines.len().saturating_sub(usize::from(area.height));
+            u16::try_from(overflow).unwrap_or(u16::MAX)
+        };
+        Paragraph::new(Text::from(lines))
+            .scroll((y, 0))
+            .render(area, buf);
+    }
+    fn desired_height(&self, width: u16) -> u16 {
+        HistoryCell::desired_height(self.as_ref(), width)
     }
 }
 
@@ -929,23 +947,6 @@ impl HistoryCell for McpToolCallCell {
     }
 }
 
-impl WidgetRef for &McpToolCallCell {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        if area.height == 0 {
-            return;
-        }
-        let lines = self.display_lines(area.width);
-        let max_rows = area.height as usize;
-        let rendered = if lines.len() > max_rows {
-            lines[lines.len() - max_rows..].to_vec()
-        } else {
-            lines
-        };
-
-        Text::from(rendered).render(area, buf);
-    }
-}
-
 pub(crate) fn new_active_mcp_tool_call(
     call_id: String,
     invocation: McpInvocation,
@@ -1424,7 +1425,7 @@ fn format_mcp_invocation<'a>(invocation: McpInvocation) -> Line<'a> {
     let args_str = invocation
         .arguments
         .as_ref()
-        .map(|v| {
+        .map(|v: &serde_json::Value| {
             // Use compact form to keep things short but readable.
             serde_json::to_string(v).unwrap_or_else(|_| v.to_string())
         })
@@ -1450,8 +1451,8 @@ mod tests {
     use codex_core::config::Config;
     use codex_core::config::ConfigOverrides;
     use codex_core::config::ConfigToml;
-    use codex_core::config_types::McpServerConfig;
-    use codex_core::config_types::McpServerTransportConfig;
+    use codex_core::config::types::McpServerConfig;
+    use codex_core::config::types::McpServerTransportConfig;
     use codex_core::protocol::McpAuthStatus;
     use codex_protocol::parse_command::ParsedCommand;
     use dirs::home_dir;

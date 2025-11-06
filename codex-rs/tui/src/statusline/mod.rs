@@ -21,6 +21,7 @@ mod palette;
 pub(crate) mod skins;
 pub(crate) mod state;
 
+pub(crate) use overlay::StatusLineLayout;
 pub(crate) use overlay::StatusLineOverlay;
 pub(crate) use skins::CustomStatusLineRenderer;
 

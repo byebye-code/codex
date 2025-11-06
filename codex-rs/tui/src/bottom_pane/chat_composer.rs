@@ -33,6 +33,7 @@ use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::prompt_args::prompt_argument_names;
 use crate::bottom_pane::prompt_args::prompt_command_with_arg_placeholders;
 use crate::bottom_pane::prompt_args::prompt_has_numeric_placeholders;
+use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
 use crate::style::user_message_style;
@@ -1728,6 +1729,20 @@ impl WidgetRef for ChatComposer {
             Line::from(vec![placeholder])
                 .render_ref(layout.textarea_rect.inner(Margin::new(0, 0)), buf);
         }
+    }
+}
+
+impl Renderable for ChatComposer {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        WidgetRef::render_ref(self, area, buf);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        ChatComposer::desired_height(self, width)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        ChatComposer::cursor_pos(self, area)
     }
 }
 

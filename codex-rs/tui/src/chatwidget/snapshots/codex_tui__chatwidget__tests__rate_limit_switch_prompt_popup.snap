@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests.rs
+assertion_line: 527
+expression: popup
+---
+  Approaching your credits limit
+  Switch to gpt-5-codex-mini to use fewer credits for upcoming turns.
+
+  1. Switch to gpt-5-codex-mini    Optimized for codex. Cheaper, faster, and
+                                   less capable.
+› 2. Keep current model (current)
+
+  Press enter to confirm or esc to go back

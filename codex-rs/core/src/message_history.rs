@@ -30,7 +30,7 @@ use tokio::io::AsyncReadExt;
 use fs2::FileExt;
 
 use crate::config::Config;
-use crate::config_types::HistoryPersistence;
+use crate::config::types::HistoryPersistence;
 
 use codex_protocol::ConversationId;
 #[cfg(unix)]

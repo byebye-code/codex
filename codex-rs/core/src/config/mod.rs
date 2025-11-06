@@ -1,23 +1,22 @@
 use crate::auth::AuthCredentialsStoreMode;
+use crate::config::types::DEFAULT_OTEL_ENVIRONMENT;
+use crate::config::types::History;
+use crate::config::types::McpServerConfig;
+use crate::config::types::Notice;
+use crate::config::types::Notifications;
+use crate::config::types::OtelConfig;
+use crate::config::types::OtelConfigToml;
+use crate::config::types::OtelExporterKind;
+use crate::config::types::ReasoningSummaryFormat;
+use crate::config::types::SandboxWorkspaceWrite;
+use crate::config::types::ShellEnvironmentPolicy;
+use crate::config::types::ShellEnvironmentPolicyToml;
+use crate::config::types::Tui;
+use crate::config::types::UriBasedFileOpener;
 use crate::config_loader::LoadedConfigLayers;
-pub use crate::config_loader::load_config_as_toml;
+use crate::config_loader::load_config_as_toml;
 use crate::config_loader::load_config_layers_with_overrides;
 use crate::config_loader::merge_toml_values;
-use crate::config_profile::ConfigProfile;
-use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
-use crate::config_types::History;
-use crate::config_types::McpServerConfig;
-use crate::config_types::Notice;
-use crate::config_types::Notifications;
-use crate::config_types::OtelConfig;
-use crate::config_types::OtelConfigToml;
-use crate::config_types::OtelExporterKind;
-use crate::config_types::ReasoningSummaryFormat;
-use crate::config_types::SandboxWorkspaceWrite;
-use crate::config_types::ShellEnvironmentPolicy;
-use crate::config_types::ShellEnvironmentPolicyToml;
-use crate::config_types::Tui;
-use crate::config_types::UriBasedFileOpener;
 use crate::features::Feature;
 use crate::features::FeatureOverrides;
 use crate::features::Features;
@@ -51,8 +50,13 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use crate::config::profile::ConfigProfile;
 use toml::Value as TomlValue;
 use toml_edit::DocumentMut;
+
+pub mod edit;
+pub mod profile;
+pub mod types;
 
 #[cfg(target_os = "windows")]
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
@@ -123,6 +127,12 @@ pub struct Config {
 
     /// Base instructions override.
     pub base_instructions: Option<String>,
+
+    /// Developer instructions override injected as a separate message.
+    pub developer_instructions: Option<String>,
+
+    /// Compact prompt override.
+    pub compact_prompt: Option<String>,
 
     /// Optional external notifier command. When set, Codex will spawn this
     /// program after each completed *turn* (i.e. when the agent finishes
@@ -242,9 +252,6 @@ pub struct Config {
     /// https://github.com/modelcontextprotocol/rust-sdk
     pub use_experimental_use_rmcp_client: bool,
 
-    /// Include the `view_image` tool that lets the agent attach a local image path to context.
-    pub include_view_image_tool: bool,
-
     /// Centralized feature flags; source of truth for feature gating.
     pub features: Features,
 
@@ -267,7 +274,7 @@ pub struct Config {
     pub disable_paste_burst: bool,
 
     /// OTEL configuration (exporter type, endpoint, headers, etc.).
-    pub otel: crate::config_types::OtelConfig,
+    pub otel: crate::config::types::OtelConfig,
 }
 
 impl Config {
@@ -450,7 +457,7 @@ pub(crate) fn set_project_trusted_inner(
 /// Patch `CODEX_HOME/config.toml` project state.
 /// Use with caution.
 pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Result<()> {
-    use crate::config_edit::ConfigEditsBuilder;
+    use crate::config::edit::ConfigEditsBuilder;
 
     ConfigEditsBuilder::new(codex_home)
         .set_project_trusted(project_path)
@@ -538,6 +545,13 @@ pub struct ConfigToml {
 
     /// System instructions.
     pub instructions: Option<String>,
+
+    /// Developer instructions inserted as a `developer` role message.
+    #[serde(default)]
+    pub developer_instructions: Option<String>,
+
+    /// Compact prompt used for history compaction.
+    pub compact_prompt: Option<String>,
 
     /// When set, restricts ChatGPT login to a specific workspace identifier.
     #[serde(default)]
@@ -631,17 +645,18 @@ pub struct ConfigToml {
     pub disable_paste_burst: Option<bool>,
 
     /// OTEL configuration.
-    pub otel: Option<crate::config_types::OtelConfigToml>,
+    pub otel: Option<crate::config::types::OtelConfigToml>,
 
     /// Tracks whether the Windows onboarding screen has been acknowledged.
     pub windows_wsl_setup_acknowledged: Option<bool>,
 
     /// Collection of in-product notices (different from notifications)
-    /// See [`crate::config_types::Notices`] for more details
+    /// See [`crate::config::types::Notices`] for more details
     pub notice: Option<Notice>,
 
     /// Legacy, now use features
     pub experimental_instructions_file: Option<PathBuf>,
+    pub experimental_compact_prompt_file: Option<PathBuf>,
     pub experimental_use_exec_command_tool: Option<bool>,
     pub experimental_use_unified_exec_tool: Option<bool>,
     pub experimental_use_rmcp_client: Option<bool>,
@@ -756,6 +771,8 @@ impl ConfigToml {
         let mut forced_auto_mode_downgraded_on_windows = false;
         if cfg!(target_os = "windows")
             && matches!(resolved_sandbox_mode, SandboxMode::WorkspaceWrite)
+            // If the experimental Windows sandbox is enabled, do not force a downgrade.
+            && crate::safety::get_platform_sandbox().is_none()
         {
             sandbox_policy = SandboxPolicy::new_read_only_policy();
             forced_auto_mode_downgraded_on_windows = true;
@@ -822,8 +839,9 @@ pub struct ConfigOverrides {
     pub config_profile: Option<String>,
     pub codex_linux_sandbox_exe: Option<PathBuf>,
     pub base_instructions: Option<String>,
+    pub developer_instructions: Option<String>,
+    pub compact_prompt: Option<String>,
     pub include_apply_patch_tool: Option<bool>,
-    pub include_view_image_tool: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
     pub tools_web_search_request: Option<bool>,
     pub experimental_sandbox_command_assessment: Option<bool>,
@@ -852,8 +870,9 @@ impl Config {
             config_profile: config_profile_key,
             codex_linux_sandbox_exe,
             base_instructions,
+            developer_instructions,
+            compact_prompt,
             include_apply_patch_tool: include_apply_patch_tool_override,
-            include_view_image_tool: include_view_image_tool_override,
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
             experimental_sandbox_command_assessment: sandbox_command_assessment_override,
@@ -880,12 +899,15 @@ impl Config {
 
         let feature_overrides = FeatureOverrides {
             include_apply_patch_tool: include_apply_patch_tool_override,
-            include_view_image_tool: include_view_image_tool_override,
             web_search_request: override_tools_web_search_request,
             experimental_sandbox_command_assessment: sandbox_command_assessment_override,
         };
 
         let features = Features::from_config(&cfg, &config_profile, feature_overrides);
+        #[cfg(target_os = "windows")]
+        {
+            crate::safety::set_windows_sandbox_enabled(features.enabled(Feature::WindowsSandbox));
+        }
 
         let resolved_cwd = {
             use std::env;
@@ -978,7 +1000,6 @@ impl Config {
         let history = cfg.history.unwrap_or_default();
 
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
-        let include_view_image_tool_flag = features.enabled(Feature::ViewImageTool);
         let tools_web_search_request = features.enabled(Feature::WebSearchRequest);
         let use_experimental_streamable_shell_tool = features.enabled(Feature::StreamableShell);
         let use_experimental_unified_exec_tool = features.enabled(Feature::UnifiedExec);
@@ -1028,6 +1049,15 @@ impl Config {
                 .and_then(|info| info.auto_compact_token_limit)
         });
 
+        let compact_prompt = compact_prompt.or(cfg.compact_prompt).and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
         // Load base instructions override from a file if specified. If the
         // path is relative, resolve it against the effective cwd so the
         // behaviour matches other path-like config values.
@@ -1035,9 +1065,24 @@ impl Config {
             .experimental_instructions_file
             .as_ref()
             .or(cfg.experimental_instructions_file.as_ref());
-        let file_base_instructions =
-            Self::get_base_instructions(experimental_instructions_path, &resolved_cwd)?;
+        let file_base_instructions = Self::load_override_from_file(
+            experimental_instructions_path,
+            &resolved_cwd,
+            "experimental instructions file",
+        )?;
         let base_instructions = base_instructions.or(file_base_instructions);
+        let developer_instructions = developer_instructions.or(cfg.developer_instructions);
+
+        let experimental_compact_prompt_path = config_profile
+            .experimental_compact_prompt_file
+            .as_ref()
+            .or(cfg.experimental_compact_prompt_file.as_ref());
+        let file_compact_prompt = Self::load_override_from_file(
+            experimental_compact_prompt_path,
+            &resolved_cwd,
+            "experimental compact prompt file",
+        )?;
+        let compact_prompt = compact_prompt.or(file_compact_prompt);
 
         // Default review model when not set in config; allow CLI override to take precedence.
         let review_model = override_review_model
@@ -1062,6 +1107,8 @@ impl Config {
             notify: cfg.notify,
             user_instructions,
             base_instructions,
+            developer_instructions,
+            compact_prompt,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
             cli_auth_credentials_store_mode: cfg.cli_auth_credentials_store.unwrap_or_default(),
@@ -1114,7 +1161,6 @@ impl Config {
             use_experimental_streamable_shell_tool,
             use_experimental_unified_exec_tool,
             use_experimental_use_rmcp_client,
-            include_view_image_tool: include_view_image_tool_flag,
             features,
             active_profile: active_profile_name,
             active_project,
@@ -1163,18 +1209,15 @@ impl Config {
         None
     }
 
-    fn get_base_instructions(
+    fn load_override_from_file(
         path: Option<&PathBuf>,
         cwd: &Path,
+        description: &str,
     ) -> std::io::Result<Option<String>> {
-        let p = match path.as_ref() {
-            None => return Ok(None),
-            Some(p) => p,
+        let Some(p) = path else {
+            return Ok(None);
         };
 
-        // Resolve relative paths against the provided cwd to make CLI
-        // overrides consistent regardless of where the process was launched
-        // from.
         let full_path = if p.is_relative() {
             cwd.join(p)
         } else {
@@ -1184,10 +1227,7 @@ impl Config {
         let contents = std::fs::read_to_string(&full_path).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
-                format!(
-                    "failed to read experimental instructions file {}: {e}",
-                    full_path.display()
-                ),
+                format!("failed to read {description} {}: {e}", full_path.display()),
             )
         })?;
 
@@ -1195,10 +1235,7 @@ impl Config {
         if s.is_empty() {
             Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "experimental instructions file is empty: {}",
-                    full_path.display()
-                ),
+                format!("{description} is empty: {}", full_path.display()),
             ))
         } else {
             Ok(Some(s))
@@ -1251,12 +1288,12 @@ pub fn log_dir(cfg: &Config) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use crate::config_edit::ConfigEdit;
-    use crate::config_edit::ConfigEditsBuilder;
-    use crate::config_edit::apply_blocking;
-    use crate::config_types::HistoryPersistence;
-    use crate::config_types::McpServerTransportConfig;
-    use crate::config_types::Notifications;
+    use crate::config::edit::ConfigEdit;
+    use crate::config::edit::ConfigEditsBuilder;
+    use crate::config::edit::apply_blocking;
+    use crate::config::types::HistoryPersistence;
+    use crate::config::types::McpServerTransportConfig;
+    use crate::config::types::Notifications;
     use crate::features::Feature;
 
     use super::*;
@@ -1563,7 +1600,7 @@ trust_level = "trusted"
         profiles.insert(
             "work".to_string(),
             ConfigProfile {
-                include_view_image_tool: Some(false),
+                tools_view_image: Some(false),
                 ..Default::default()
             },
         );
@@ -1580,7 +1617,6 @@ trust_level = "trusted"
         )?;
 
         assert!(!config.features.enabled(Feature::ViewImageTool));
-        assert!(!config.include_view_image_tool);
 
         Ok(())
     }
@@ -2656,6 +2692,61 @@ model = "gpt-5-codex"
         }
     }
 
+    #[test]
+    fn cli_override_sets_compact_prompt() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let overrides = ConfigOverrides {
+            compact_prompt: Some("Use the compact override".to_string()),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            overrides,
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.compact_prompt.as_deref(),
+            Some("Use the compact override")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn loads_compact_prompt_from_file() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let workspace = codex_home.path().join("workspace");
+        std::fs::create_dir_all(&workspace)?;
+
+        let prompt_path = workspace.join("compact_prompt.txt");
+        std::fs::write(&prompt_path, "  summarize differently  ")?;
+
+        let cfg = ConfigToml {
+            experimental_compact_prompt_file: Some(PathBuf::from("compact_prompt.txt")),
+            ..Default::default()
+        };
+
+        let overrides = ConfigOverrides {
+            cwd: Some(workspace),
+            ..Default::default()
+        };
+
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            overrides,
+            codex_home.path().to_path_buf(),
+        )?;
+
+        assert_eq!(
+            config.compact_prompt.as_deref(),
+            Some("summarize differently")
+        );
+
+        Ok(())
+    }
+
     fn create_test_fixture() -> std::io::Result<PrecedenceTestFixture> {
         let toml = r#"
 model = "o3"
@@ -2811,6 +2902,8 @@ model_verbosity = "high"
                 model_verbosity: None,
                 chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
                 base_instructions: None,
+                developer_instructions: None,
+                compact_prompt: None,
                 forced_chatgpt_workspace_id: None,
                 forced_login_method: None,
                 include_apply_patch_tool: false,
@@ -2819,7 +2912,6 @@ model_verbosity = "high"
                 use_experimental_streamable_shell_tool: false,
                 use_experimental_unified_exec_tool: false,
                 use_experimental_use_rmcp_client: false,
-                include_view_image_tool: true,
                 features: Features::with_defaults(),
                 active_profile: Some("o3".to_string()),
                 active_project: ProjectConfig { trust_level: None },
@@ -2883,6 +2975,8 @@ model_verbosity = "high"
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
             forced_chatgpt_workspace_id: None,
             forced_login_method: None,
             include_apply_patch_tool: false,
@@ -2891,7 +2985,6 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
-            include_view_image_tool: true,
             features: Features::with_defaults(),
             active_profile: Some("gpt3".to_string()),
             active_project: ProjectConfig { trust_level: None },
@@ -2970,6 +3063,8 @@ model_verbosity = "high"
             model_verbosity: None,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
             forced_chatgpt_workspace_id: None,
             forced_login_method: None,
             include_apply_patch_tool: false,
@@ -2978,7 +3073,6 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
-            include_view_image_tool: true,
             features: Features::with_defaults(),
             active_profile: Some("zdr".to_string()),
             active_project: ProjectConfig { trust_level: None },
@@ -3043,6 +3137,8 @@ model_verbosity = "high"
             model_verbosity: Some(Verbosity::High),
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
+            developer_instructions: None,
+            compact_prompt: None,
             forced_chatgpt_workspace_id: None,
             forced_login_method: None,
             include_apply_patch_tool: false,
@@ -3051,7 +3147,6 @@ model_verbosity = "high"
             use_experimental_streamable_shell_tool: false,
             use_experimental_unified_exec_tool: false,
             use_experimental_use_rmcp_client: false,
-            include_view_image_tool: true,
             features: Features::with_defaults(),
             active_profile: Some("gpt5".to_string()),
             active_project: ProjectConfig { trust_level: None },
@@ -3185,7 +3280,7 @@ trust_level = "trusted"
 
 #[cfg(test)]
 mod notifications_tests {
-    use crate::config_types::Notifications;
+    use crate::config::types::Notifications;
     use assert_matches::assert_matches;
     use serde::Deserialize;
 

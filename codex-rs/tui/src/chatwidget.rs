@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_core::config::Config;
-use codex_core::config_types::Notifications;
+use codex_core::config::types::Notifications;
 use codex_core::git_info::current_branch_name;
 use codex_core::git_info::local_git_branches;
 use codex_core::project_doc::DEFAULT_PROJECT_DOC_FILENAME;
@@ -42,6 +42,7 @@ use codex_core::protocol::UndoCompletedEvent;
 use codex_core::protocol::UndoStartedEvent;
 use codex_core::protocol::UserMessageEvent;
 use codex_core::protocol::ViewImageToolCallEvent;
+use codex_core::protocol::WarningEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
 use codex_protocol::ConversationId;
@@ -53,8 +54,6 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use rand::Rng;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Constraint;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Stylize;
@@ -62,7 +61,6 @@ use ratatui::text::Line;
 use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
-use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::debug;
@@ -92,11 +90,16 @@ use crate::history_cell::McpToolCallCell;
 use crate::markdown::append_markdown;
 #[cfg(target_os = "windows")]
 use crate::onboarding::WSL_INSTRUCTIONS;
+use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
+use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
+use crate::render::renderable::RenderableExt;
+use crate::render::renderable::RenderableItem;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::statusline::StatusLineGitSnapshot;
+use crate::statusline::StatusLineLayout;
 use crate::statusline::StatusLineOverlay;
 use crate::statusline::StatusLineRenderer;
 use crate::text_formatting::truncate_text;
@@ -135,6 +138,16 @@ struct RunningCommand {
 }
 
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
+const NUDGE_MODEL_SLUG: &str = "gpt-5-codex-mini";
+const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
+
+#[derive(Default)]
+enum RateLimitSwitchPromptState {
+    #[default]
+    Idle,
+    Pending,
+    Shown,
+}
 
 #[derive(Default)]
 struct RateLimitWarningState {
@@ -247,6 +260,7 @@ pub(crate) struct ChatWidget {
     token_info: Option<TokenUsageInfo>,
     rate_limit_snapshot: Option<RateLimitSnapshotDisplay>,
     rate_limit_warnings: RateLimitWarningState,
+    rate_limit_switch_prompt: RateLimitSwitchPromptState,
     // Stream lifecycle controller
     stream_controller: Option<StreamController>,
     running_commands: HashMap<String, RunningCommand>,
@@ -293,6 +307,15 @@ impl From<String> for UserMessage {
     fn from(text: String) -> Self {
         Self {
             text,
+            image_paths: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for UserMessage {
+    fn from(text: &str) -> Self {
+        Self {
+            text: text.to_string(),
             image_paths: Vec::new(),
         }
     }
@@ -549,6 +572,27 @@ impl ChatWidget {
                     .and_then(|window| window.window_minutes),
             );
 
+            let high_usage = snapshot
+                .secondary
+                .as_ref()
+                .map(|w| w.used_percent >= RATE_LIMIT_SWITCH_PROMPT_THRESHOLD)
+                .unwrap_or(false)
+                || snapshot
+                    .primary
+                    .as_ref()
+                    .map(|w| w.used_percent >= RATE_LIMIT_SWITCH_PROMPT_THRESHOLD)
+                    .unwrap_or(false);
+
+            if high_usage
+                && self.config.model != NUDGE_MODEL_SLUG
+                && !matches!(
+                    self.rate_limit_switch_prompt,
+                    RateLimitSwitchPromptState::Shown
+                )
+            {
+                self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Pending;
+            }
+
             let display = crate::status::rate_limit_snapshot_display(&snapshot, Local::now());
             self.rate_limit_snapshot = Some(display);
 
@@ -570,6 +614,7 @@ impl ChatWidget {
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
         self.stream_controller = None;
+        self.maybe_show_pending_rate_limit_prompt();
     }
 
     fn on_error(&mut self, message: String) {
@@ -579,6 +624,11 @@ impl ChatWidget {
 
         // After an error ends the turn, try sending the next queued input.
         self.maybe_send_next_queued_input();
+    }
+
+    fn on_warning(&mut self, message: String) {
+        self.add_to_history(history_cell::new_warning_event(message));
+        self.request_redraw();
     }
 
     /// Handle a turn aborted due to user interrupt (Esc).
@@ -723,7 +773,7 @@ impl ChatWidget {
     }
 
     fn on_shutdown_complete(&mut self) {
-        self.app_event_tx.send(AppEvent::ExitRequest);
+        self.request_exit();
     }
 
     fn on_turn_diff(&mut self, unified_diff: String) {
@@ -1048,35 +1098,6 @@ impl ChatWidget {
         }
     }
 
-    fn layout_areas(&self, area: Rect) -> [Rect; 3] {
-        let mut bottom_min = self.bottom_pane.desired_height(area.width);
-        if self
-            .status_overlay
-            .as_ref()
-            .is_some_and(|_| !self.bottom_pane.has_active_view())
-        {
-            bottom_min = bottom_min.saturating_add(StatusLineOverlay::reserved_rows());
-        }
-        let bottom_min = bottom_min.min(area.height);
-        let remaining = area.height.saturating_sub(bottom_min);
-
-        let active_desired = self
-            .active_cell
-            .as_ref()
-            .map_or(0, |c| c.desired_height(area.width) + 1);
-        let active_height = active_desired.min(remaining);
-        // Note: no header area; remaining is not used beyond computing active height.
-
-        let header_height = 0u16;
-
-        Layout::vertical([
-            Constraint::Length(header_height),
-            Constraint::Length(active_height),
-            Constraint::Min(bottom_min),
-        ])
-        .areas(area)
-    }
-
     pub(crate) fn new(
         common: ChatWidgetInit,
         conversation_manager: Arc<ConversationManager>,
@@ -1127,6 +1148,7 @@ impl ChatWidget {
             token_info: None,
             rate_limit_snapshot: None,
             rate_limit_warnings: RateLimitWarningState::default(),
+            rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             stream_controller: None,
             running_commands: HashMap::new(),
             task_complete_pending: false,
@@ -1212,6 +1234,7 @@ impl ChatWidget {
             token_info: None,
             rate_limit_snapshot: None,
             rate_limit_warnings: RateLimitWarningState::default(),
+            rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
             stream_controller: None,
             running_commands: HashMap::new(),
             task_complete_pending: false,
@@ -1241,22 +1264,6 @@ impl ChatWidget {
         }
         widget.refresh_queued_user_messages();
         widget
-    }
-
-    pub fn desired_height(&self, width: u16) -> u16 {
-        let mut height = self.bottom_pane.desired_height(width);
-        if self
-            .status_overlay
-            .as_ref()
-            .is_some_and(|_| !self.bottom_pane.has_active_view())
-        {
-            height = height.saturating_add(StatusLineOverlay::reserved_rows());
-        }
-        height
-            + self
-                .active_cell
-                .as_ref()
-                .map_or(0, |c| c.desired_height(width) + 1)
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -1292,6 +1299,7 @@ impl ChatWidget {
             && self.bottom_pane.is_task_running()
         {
             self.halt_running_task();
+            return;
         }
 
         match key_event {
@@ -1316,12 +1324,7 @@ impl ChatWidget {
                             text,
                             image_paths: self.bottom_pane.take_recent_submission_images(),
                         };
-                        if self.bottom_pane.is_task_running() {
-                            self.queued_user_messages.push_back(user_message);
-                            self.refresh_queued_user_messages();
-                        } else {
-                            self.submit_user_message(user_message);
-                        }
+                        self.queue_user_message(user_message);
                     }
                     InputResult::Command(cmd) => {
                         self.dispatch_command(cmd);
@@ -1378,7 +1381,7 @@ impl ChatWidget {
                     return;
                 }
                 const INIT_PROMPT: &str = include_str!("../prompt_for_init_command.md");
-                self.submit_text_message(INIT_PROMPT.to_string());
+                self.submit_user_message(INIT_PROMPT.to_string().into());
             }
             SlashCommand::Compact => {
                 self.clear_token_usage();
@@ -1393,8 +1396,8 @@ impl ChatWidget {
             SlashCommand::Approvals => {
                 self.open_approvals_popup();
             }
-            SlashCommand::Quit => {
-                self.app_event_tx.send(AppEvent::ExitRequest);
+            SlashCommand::Quit | SlashCommand::Exit => {
+                self.request_exit();
             }
             SlashCommand::Logout => {
                 if let Err(e) = codex_core::auth::logout(
@@ -1403,7 +1406,7 @@ impl ChatWidget {
                 ) {
                     tracing::error!("failed to logout: {e}");
                 }
-                self.app_event_tx.send(AppEvent::ExitRequest);
+                self.request_exit();
             }
             SlashCommand::Undo => {
                 self.app_event_tx.send(AppEvent::CodexOp(Op::Undo));
@@ -1434,7 +1437,16 @@ impl ChatWidget {
             SlashCommand::Mcp => {
                 self.add_mcp_output();
             }
-            #[cfg(debug_assertions)]
+            SlashCommand::Rollout => {
+                if let Some(path) = self.rollout_path() {
+                    self.add_info_message(
+                        format!("Current rollout path: {}", path.display()),
+                        None,
+                    );
+                } else {
+                    self.add_info_message("Rollout path is not available yet.".to_string(), None);
+                }
+            }
             SlashCommand::TestApproval => {
                 use codex_core::protocol::EventMsg;
                 use std::collections::HashMap;
@@ -1515,6 +1527,15 @@ impl ChatWidget {
             self.needs_final_message_separator = true;
         }
         self.app_event_tx.send(AppEvent::InsertHistoryCell(cell));
+    }
+
+    fn queue_user_message(&mut self, user_message: UserMessage) {
+        if self.bottom_pane.is_task_running() {
+            self.queued_user_messages.push_back(user_message);
+            self.refresh_queued_user_messages();
+        } else {
+            self.submit_user_message(user_message);
+        }
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
@@ -1632,6 +1653,7 @@ impl ChatWidget {
                 self.set_token_info(ev.info);
                 self.on_rate_limit_snapshot(ev.rate_limits);
             }
+            EventMsg::Warning(WarningEvent { message }) => self.on_warning(message),
             EventMsg::Error(ErrorEvent { message }) => self.on_error(message),
             EventMsg::TurnAborted(ev) => match ev.reason {
                 TurnAbortReason::Interrupted => {
@@ -1748,6 +1770,10 @@ impl ChatWidget {
         }
     }
 
+    fn request_exit(&self) {
+        self.app_event_tx.send(AppEvent::ExitRequest);
+    }
+
     fn request_redraw(&mut self) {
         self.frame_requester.schedule_frame();
     }
@@ -1845,6 +1871,7 @@ impl ChatWidget {
             };
             let is_current = preset.model == current_model;
             let preset_for_action = preset;
+            let single_supported_effort = preset_for_action.supported_reasoning_efforts.len() == 1;
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::OpenReasoningPopup {
                     model: preset_for_action,
@@ -1855,7 +1882,7 @@ impl ChatWidget {
                 description,
                 is_current,
                 actions,
-                dismiss_on_select: false,
+                dismiss_on_select: single_supported_effort,
                 ..Default::default()
             });
         }
@@ -1892,6 +1919,15 @@ impl ChatWidget {
                 stored: Some(default_effort),
                 display: default_effort,
             });
+        }
+
+        if choices.len() == 1 {
+            if let Some(effort) = choices.first().and_then(|c| c.stored) {
+                self.apply_model_and_effort(preset.model.to_string(), Some(effort));
+            } else {
+                self.apply_model_and_effort(preset.model.to_string(), None);
+            }
+            return;
         }
 
         let default_choice: Option<ReasoningEffortConfig> = choices
@@ -1932,7 +1968,7 @@ impl ChatWidget {
 
             let warning = "⚠ High reasoning effort can quickly consume Plus plan rate limits.";
             let show_warning =
-                preset.model == "gpt-5-codex" && effort == ReasoningEffortConfig::High;
+                preset.model.starts_with("gpt-5-codex") && effort == ReasoningEffortConfig::High;
             let selected_description = show_warning.then(|| {
                 description
                     .as_ref()
@@ -1989,6 +2025,32 @@ impl ChatWidget {
         });
     }
 
+    fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
+        self.app_event_tx
+            .send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                sandbox_policy: None,
+                model: Some(model.clone()),
+                effort: Some(effort),
+                summary: None,
+            }));
+        self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
+        self.app_event_tx
+            .send(AppEvent::UpdateReasoningEffort(effort));
+        self.app_event_tx.send(AppEvent::PersistModelSelection {
+            model: model.clone(),
+            effort,
+        });
+        tracing::info!(
+            "Selected model: {}, Selected effort: {}",
+            model,
+            effort
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "default".to_string())
+        );
+    }
+
     /// Open a popup to choose the approvals mode (ask for approval policy + sandbox policy).
     pub(crate) fn open_approvals_popup(&mut self) {
         let current_approval = self.config.approval_policy;
@@ -2020,7 +2082,10 @@ impl ChatWidget {
                 current_approval == preset.approval && current_sandbox == preset.sandbox;
             let name = preset.label.to_string();
             let description_text = preset.description;
-            let description = if cfg!(target_os = "windows") && preset.id == "auto" {
+            let description = if cfg!(target_os = "windows")
+                && preset.id == "auto"
+                && codex_core::get_platform_sandbox().is_none()
+            {
                 Some(format!(
                     "{description_text}\nRequires Windows Subsystem for Linux (WSL). Show installation instructions..."
                 ))
@@ -2040,7 +2105,10 @@ impl ChatWidget {
                         preset: preset_clone.clone(),
                     });
                 })]
-            } else if cfg!(target_os = "windows") && preset.id == "auto" {
+            } else if cfg!(target_os = "windows")
+                && preset.id == "auto"
+                && codex_core::get_platform_sandbox().is_none()
+            {
                 vec![Box::new(|tx| {
                     tx.send(AppEvent::ShowWindowsAutoModeInstructions);
                 })]
@@ -2476,16 +2544,6 @@ impl ChatWidget {
         self.bottom_pane.show_view(Box::new(view));
     }
 
-    /// Programmatically submit a user text message as if typed in the
-    /// composer. The text will be added to conversation history and sent to
-    /// the agent.
-    pub(crate) fn submit_text_message(&mut self, text: String) {
-        if text.is_empty() {
-            return;
-        }
-        self.submit_user_message(text.into());
-    }
-
     pub(crate) fn token_usage(&self) -> TokenUsage {
         self.token_info
             .as_ref()
@@ -2509,68 +2567,191 @@ impl ChatWidget {
 
     pub(crate) fn clear_token_usage(&mut self) {
         self.token_info = None;
+        self.bottom_pane.set_context_window_percent(None);
         if let Some(overlay) = self.status_overlay.as_mut() {
             overlay.update_tokens(None);
         }
     }
 
-    pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let [_, _, bottom_pane_area] = self.layout_areas(area);
-        let pane_area = self
-            .status_overlay
-            .as_ref()
-            .and_then(|overlay| {
-                overlay
-                    .layout(bottom_pane_area, self.bottom_pane.has_active_view())
-                    .map(|layout| layout.pane_area)
-            })
-            .filter(|pane| pane.height > 0)
-            .unwrap_or(bottom_pane_area);
-        self.bottom_pane.cursor_pos(pane_area)
+    fn lower_cost_preset(&self) -> Option<ModelPreset> {
+        let auth_mode = self.auth_manager.auth().map(|auth| auth.mode);
+        builtin_model_presets(auth_mode)
+            .into_iter()
+            .find(|preset| preset.model == NUDGE_MODEL_SLUG)
+    }
+
+    fn maybe_show_pending_rate_limit_prompt(&mut self) {
+        if !matches!(
+            self.rate_limit_switch_prompt,
+            RateLimitSwitchPromptState::Pending
+        ) {
+            return;
+        }
+        if let Some(preset) = self.lower_cost_preset() {
+            self.open_rate_limit_switch_prompt(preset);
+            self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Shown;
+        } else {
+            self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
+        }
+    }
+
+    fn open_rate_limit_switch_prompt(&mut self, preset: ModelPreset) {
+        let switch_model = preset.model.to_string();
+        let display_name = preset.display_name.to_string();
+        let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
+
+        let switch_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+            tx.send(AppEvent::CodexOp(Op::OverrideTurnContext {
+                cwd: None,
+                approval_policy: None,
+                sandbox_policy: None,
+                model: Some(switch_model.clone()),
+                effort: Some(Some(default_effort)),
+                summary: None,
+            }));
+            tx.send(AppEvent::UpdateModel(switch_model.clone()));
+            tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
+        })];
+
+        let keep_actions: Vec<SelectionAction> = Vec::new();
+        let description = if preset.description.is_empty() {
+            Some("Uses fewer credits for upcoming turns.".to_string())
+        } else {
+            Some(preset.description.to_string())
+        };
+
+        let items = vec![
+            SelectionItem {
+                name: format!("Switch to {display_name}"),
+                description,
+                selected_description: None,
+                is_current: false,
+                actions: switch_actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Keep current model".to_string(),
+                description: None,
+                selected_description: None,
+                is_current: true,
+                actions: keep_actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+        ];
+
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            title: Some("Approaching your credits limit".to_string()),
+            subtitle: Some(format!(
+                "Switch to {display_name} to use fewer credits for upcoming turns."
+            )),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            is_searchable: false,
+            search_placeholder: None,
+            ..Default::default()
+        });
+    }
+
+    fn bottom_pane_renderable(&self) -> impl Renderable + '_ {
+        BottomPaneWithOverlay {
+            bottom_pane: &self.bottom_pane,
+            overlay: self
+                .status_overlay
+                .as_ref()
+                .filter(|_| !self.bottom_pane.has_active_view()),
+        }
+    }
+
+    fn as_renderable(&self) -> RenderableItem<'_> {
+        let active_cell_renderable = match &self.active_cell {
+            Some(cell) => RenderableItem::Borrowed(cell).inset(Insets::tlbr(1, 0, 0, 0)),
+            None => RenderableItem::Owned(Box::new(())),
+        };
+        let mut flex = FlexRenderable::new();
+        flex.push(1, active_cell_renderable);
+        flex.push(
+            0,
+            RenderableItem::Owned(Box::new(self.bottom_pane_renderable()))
+                .inset(Insets::tlbr(1, 0, 0, 0)),
+        );
+        RenderableItem::Owned(Box::new(flex))
     }
 }
 
-impl WidgetRef for &ChatWidget {
-    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let [_, active_cell_area, bottom_pane_area] = self.layout_areas(area);
-        let overlay_layout = self.status_overlay.as_ref().and_then(|overlay| {
-            overlay.layout(bottom_pane_area, self.bottom_pane.has_active_view())
-        });
-        let (pane_area, pill_area, status_area) =
-            overlay_layout.map_or((None, None, None), |layout| {
-                (
-                    Some(layout.pane_area),
-                    Some(layout.run_pill_area),
-                    Some(layout.status_line_area),
-                )
-            });
-
-        if let Some(pane_area) = pane_area {
-            (&self.bottom_pane).render(pane_area, buf);
-        } else {
-            (&self.bottom_pane).render(bottom_pane_area, buf);
-        }
-        if !active_cell_area.is_empty()
-            && let Some(cell) = &self.active_cell
-        {
-            let mut area = active_cell_area;
-            area.y = area.y.saturating_add(1);
-            area.height = area.height.saturating_sub(1);
-            if let Some(exec) = cell.as_any().downcast_ref::<ExecCell>() {
-                exec.render_ref(area, buf);
-            } else if let Some(tool) = cell.as_any().downcast_ref::<McpToolCallCell>() {
-                tool.render_ref(area, buf);
-            }
-        }
-        if let (Some(overlay), Some(pill_area)) = (self.status_overlay.as_ref(), pill_area) {
-            Clear.render(pill_area, buf);
-            overlay.render_run_pill(pill_area, buf);
-        }
-        if let (Some(overlay), Some(status_area)) = (self.status_overlay.as_ref(), status_area) {
-            Clear.render(status_area, buf);
-            overlay.render_status_line(status_area, buf);
-        }
+impl Renderable for ChatWidget {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.as_renderable().render(area, buf);
         self.last_rendered_width.set(Some(area.width as usize));
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.as_renderable().desired_height(width)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        self.as_renderable().cursor_pos(area)
+    }
+}
+
+struct BottomPaneWithOverlay<'a> {
+    bottom_pane: &'a BottomPane,
+    overlay: Option<&'a StatusLineOverlay>,
+}
+
+impl BottomPaneWithOverlay<'_> {
+    fn overlay_layout(&self, area: Rect) -> Option<StatusLineLayout> {
+        let overlay = self.overlay?;
+        overlay.layout(area, self.bottom_pane.has_active_view())
+    }
+}
+
+impl Renderable for BottomPaneWithOverlay<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let overlay_layout = self.overlay_layout(area);
+        if let Some(layout) = overlay_layout {
+            if !layout.pane_area.is_empty() {
+                self.bottom_pane.render(layout.pane_area, buf);
+            } else {
+                self.bottom_pane.render(area, buf);
+            }
+            if !layout.run_pill_area.is_empty() {
+                Clear.render(layout.run_pill_area, buf);
+                if let Some(overlay) = self.overlay {
+                    overlay.render_run_pill(layout.run_pill_area, buf);
+                }
+            }
+            if !layout.status_line_area.is_empty() {
+                Clear.render(layout.status_line_area, buf);
+                if let Some(overlay) = self.overlay {
+                    overlay.render_status_line(layout.status_line_area, buf);
+                }
+            }
+        } else {
+            self.bottom_pane.render(area, buf);
+        }
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        let mut height = self.bottom_pane.desired_height(width);
+        if self.overlay.is_some() && !self.bottom_pane.has_active_view() {
+            height = height.saturating_add(StatusLineOverlay::reserved_rows());
+        }
+        height
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let overlay_layout = self.overlay_layout(area);
+        if let Some(layout) = overlay_layout {
+            if !layout.pane_area.is_empty() {
+                self.bottom_pane.cursor_pos(layout.pane_area)
+            } else {
+                self.bottom_pane.cursor_pos(area)
+            }
+        } else {
+            self.bottom_pane.cursor_pos(area)
+        }
     }
 }
 

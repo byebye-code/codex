@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests.rs
-assertion_line: 2843
+assertion_line: 2977
 expression: term.backend().vt100().screen().contents()
 ---
 • I’m going to search the repo for where “Change Approved” is rendered to update
@@ -9,6 +9,7 @@ expression: term.backend().vt100().screen().contents()
 • Explored
   └ Search Change Approved
     Read diff_render.rs
+
 
  󰔟 0s ◦ Investigating rendering code 
 

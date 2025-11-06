@@ -5,7 +5,10 @@ mod abort_tasks;
 #[cfg(not(target_os = "windows"))]
 mod apply_patch_cli;
 #[cfg(not(target_os = "windows"))]
+mod apply_patch_freeform;
+#[cfg(not(target_os = "windows"))]
 mod approvals;
+mod auth_refresh;
 mod cli_stream;
 mod client;
 mod codex_delegate;
@@ -36,6 +39,7 @@ mod tool_harness;
 mod tool_parallelism;
 mod tools;
 mod truncation;
+mod undo;
 mod unified_exec;
 mod user_notification;
 mod user_shell_cmd;
