@@ -118,6 +118,10 @@ impl BottomPane {
         self.view_stack.last().map(std::convert::AsRef::as_ref)
     }
 
+    pub(crate) fn has_active_view(&self) -> bool {
+        self.active_view().is_some()
+    }
+
     fn push_view(&mut self, view: Box<dyn BottomPaneView>) {
         self.view_stack.push(view);
         self.request_redraw();
@@ -255,6 +259,11 @@ impl BottomPane {
     #[cfg(test)]
     pub(crate) fn ctrl_c_quit_hint_visible(&self) -> bool {
         self.ctrl_c_quit_hint
+    }
+
+    #[cfg(test)]
+    pub(crate) fn composer_layout_for_tests(&self, area: Rect) -> [Rect; 3] {
+        self.composer.layout_areas_for_tests(area)
     }
 
     #[cfg(test)]

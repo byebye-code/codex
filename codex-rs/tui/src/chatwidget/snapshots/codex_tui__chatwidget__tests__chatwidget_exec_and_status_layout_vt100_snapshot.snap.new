@@ -1,0 +1,20 @@
+---
+source: tui/src/chatwidget/tests.rs
+assertion_line: 3076
+expression: term.backend().vt100().screen().contents()
+---
+• I’m going to search the repo for where “Change Approved” is rendered to update
+  that view.
+
+• Explored
+  └ Search Change Approved
+    Read diff_render.rs
+
+
+ 󰔟 0s ◦ Investigating rendering code 
+
+
+› Summarize recent commits
+
+
+ tui  󱚣 gpt-5.1-codex         vermissian   codex-aws-test  ☸ codex-dev 

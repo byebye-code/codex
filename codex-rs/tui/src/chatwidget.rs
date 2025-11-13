@@ -58,7 +58,9 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
+use ratatui::widgets::Clear;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 use ratatui::widgets::Wrap;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::debug;
@@ -96,6 +98,10 @@ use crate::render::renderable::RenderableExt;
 use crate::render::renderable::RenderableItem;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
+use crate::statusline::StatusLineGitSnapshot;
+use crate::statusline::StatusLineLayout;
+use crate::statusline::StatusLineOverlay;
+use crate::statusline::StatusLineRenderer;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
@@ -132,7 +138,7 @@ struct RunningCommand {
 }
 
 const RATE_LIMIT_WARNING_THRESHOLDS: [f64; 3] = [75.0, 90.0, 95.0];
-const NUDGE_MODEL_SLUG: &str = "gpt-5.1-codex-mini";
+const NUDGE_MODEL_SLUG: &str = "gpt-5-codex-mini";
 const RATE_LIMIT_SWITCH_PROMPT_THRESHOLD: f64 = 90.0;
 
 #[derive(Default)]
@@ -230,6 +236,7 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) feedback: codex_feedback::CodexFeedback,
+    pub(crate) status_renderer: Option<Box<dyn StatusLineRenderer>>,
 }
 
 #[derive(Default)]
@@ -244,6 +251,7 @@ pub(crate) struct ChatWidget {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
     bottom_pane: BottomPane,
+    status_overlay: Option<StatusLineOverlay>,
     active_cell: Option<Box<dyn HistoryCell>>,
     config: Config,
     auth_manager: Arc<AuthManager>,
@@ -330,9 +338,40 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn update_statusline_git(&mut self, git: Option<StatusLineGitSnapshot>) {
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.update_git(git);
+        }
+    }
+
+    pub(crate) fn update_statusline_kube_context(&mut self, context: Option<String>) {
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.update_kube_context(context);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_status_renderer(&mut self, renderer: Box<dyn StatusLineRenderer>) {
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_renderer(renderer);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn status_line_mut(
+        &mut self,
+    ) -> Option<&mut crate::statusline::state::StatusLineState> {
+        self.status_overlay
+            .as_mut()
+            .map(StatusLineOverlay::state_mut)
+    }
+
     fn set_status_header(&mut self, header: String) {
         self.current_status_header = header.clone();
         self.bottom_pane.update_status_header(header);
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_run_header(&self.current_status_header);
+        }
     }
 
     // --- Small event handlers ---
@@ -341,6 +380,11 @@ impl ChatWidget {
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.conversation_id = Some(event.session_id);
         self.current_rollout_path = Some(event.rollout_path.clone());
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_session_id(Some(event.session_id.to_string()));
+            overlay.sync_model(&self.config);
+            overlay.spawn_background_tasks();
+        }
         let initial_messages = event.initial_messages.clone();
         let model_for_header = event.model.clone();
         self.session_header.set_model(&model_for_header);
@@ -454,9 +498,16 @@ impl ChatWidget {
         self.bottom_pane.set_task_running(true);
         self.retry_status_header = None;
         self.bottom_pane.set_interrupt_hint_visible(true);
+        if self.status_overlay.is_some() {
+            self.bottom_pane.hide_status_indicator();
+        }
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_interrupt_hint_visible(true);
+            overlay.start_task("Working");
+        }
         self.request_redraw();
     }
 
@@ -466,6 +517,13 @@ impl ChatWidget {
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_interrupt_hint_visible(false);
+            overlay.complete_task();
+        }
+        if let Some(overlay) = self.status_overlay.as_ref() {
+            overlay.spawn_background_tasks();
+        }
         self.request_redraw();
 
         // If there is a queued user message, send exactly one now to begin the next turn.
@@ -474,21 +532,26 @@ impl ChatWidget {
         self.notify(Notification::AgentTurnComplete {
             response: last_agent_message.unwrap_or_default(),
         });
-
         self.maybe_show_pending_rate_limit_prompt();
     }
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
-        if let Some(info) = info {
-            let context_window = info
+        self.token_info = info.clone();
+        if let Some(info_inner) = self.token_info.as_ref() {
+            let context_window = info_inner
                 .model_context_window
                 .or(self.config.model_context_window);
             let percent = context_window.map(|window| {
-                info.last_token_usage
+                info_inner
+                    .last_token_usage
                     .percent_of_context_window_remaining(window)
             });
             self.bottom_pane.set_context_window_percent(percent);
-            self.token_info = Some(info);
+        } else {
+            self.bottom_pane.set_context_window_percent(None);
+        }
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.update_tokens(info);
         }
     }
 
@@ -728,9 +791,15 @@ impl ChatWidget {
     fn on_undo_started(&mut self, event: UndoStartedEvent) {
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane.set_interrupt_hint_visible(false);
+        if self.status_overlay.is_some() {
+            self.bottom_pane.hide_status_indicator();
+        }
         let message = event
             .message
             .unwrap_or_else(|| "Undo in progress...".to_string());
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_interrupt_hint_visible(false);
+        }
         self.set_status_header(message);
     }
 
@@ -870,6 +939,14 @@ impl ChatWidget {
                 self.flush_active_cell();
             }
         }
+        if self.running_commands.is_empty() {
+            if let Some(overlay) = self.status_overlay.as_mut() {
+                overlay.set_run_header("Working");
+            }
+            if let Some(overlay) = self.status_overlay.as_ref() {
+                overlay.refresh_git();
+            }
+        }
     }
 
     pub(crate) fn handle_patch_apply_end_now(
@@ -880,6 +957,12 @@ impl ChatWidget {
         // Otherwise, add a failure block.
         if !event.success {
             self.add_to_history(history_cell::new_patch_apply_failure(event.stderr));
+        }
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_run_header("Working");
+        }
+        if let Some(overlay) = self.status_overlay.as_ref() {
+            overlay.refresh_git();
         }
     }
 
@@ -895,6 +978,9 @@ impl ChatWidget {
             reason: ev.reason,
             risk: ev.risk,
         };
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_run_header(&StatusLineOverlay::approval_status_label("command"));
+        }
         self.bottom_pane.push_approval_request(request);
         self.request_redraw();
     }
@@ -912,6 +998,9 @@ impl ChatWidget {
             changes: ev.changes.clone(),
             cwd: self.config.cwd.clone(),
         };
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_run_header(&StatusLineOverlay::approval_status_label("patch"));
+        }
         self.bottom_pane.push_approval_request(request);
         self.request_redraw();
         self.notify(Notification::EditApprovalRequested {
@@ -930,6 +1019,10 @@ impl ChatWidget {
                 is_user_shell_command: ev.is_user_shell_command,
             },
         );
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.resume_timer();
+            overlay.set_run_header(&StatusLineOverlay::exec_status_label(&ev.command));
+        }
         if let Some(cell) = self
             .active_cell
             .as_mut()
@@ -958,6 +1051,10 @@ impl ChatWidget {
 
     pub(crate) fn handle_mcp_begin_now(&mut self, ev: McpToolCallBeginEvent) {
         self.flush_answer_stream_with_separator();
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.resume_timer();
+            overlay.set_run_header(&StatusLineOverlay::tool_status_label(&ev.invocation));
+        }
         self.flush_active_cell();
         self.active_cell = Some(Box::new(history_cell::new_active_mcp_tool_call(
             ev.call_id,
@@ -994,6 +1091,9 @@ impl ChatWidget {
         if let Some(extra) = extra_cell {
             self.add_boxed_history(extra);
         }
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_run_header("Working");
+        }
     }
 
     pub(crate) fn new(
@@ -1009,14 +1109,22 @@ impl ChatWidget {
             enhanced_keys_supported,
             auth_manager,
             feedback,
+            status_renderer,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
         let codex_op_tx = spawn_agent(config.clone(), app_event_tx.clone(), conversation_manager);
+        let frame_requester_clone = frame_requester.clone();
+        let status_overlay = StatusLineOverlay::new(
+            &config,
+            frame_requester_clone.clone(),
+            app_event_tx.clone(),
+            status_renderer,
+        );
 
-        Self {
+        let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
-            frame_requester: frame_requester.clone(),
+            frame_requester: frame_requester_clone,
             codex_op_tx,
             bottom_pane: BottomPane::new(BottomPaneParams {
                 frame_requester,
@@ -1026,6 +1134,7 @@ impl ChatWidget {
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
             }),
+            status_overlay,
             active_cell: None,
             config: config.clone(),
             auth_manager,
@@ -1056,7 +1165,17 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+        };
+        if let Some(overlay) = widget.status_overlay.as_mut() {
+            let queued: Vec<String> = widget
+                .queued_user_messages
+                .iter()
+                .map(|m| m.text.clone())
+                .collect();
+            overlay.bootstrap(&widget.config, widget.token_info.clone(), queued);
         }
+        widget.refresh_queued_user_messages();
+        widget
     }
 
     /// Create a ChatWidget attached to an existing conversation (e.g., a fork).
@@ -1074,16 +1193,24 @@ impl ChatWidget {
             enhanced_keys_supported,
             auth_manager,
             feedback,
+            status_renderer,
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
 
         let codex_op_tx =
             spawn_agent_from_existing(conversation, session_configured, app_event_tx.clone());
+        let frame_requester_clone = frame_requester.clone();
+        let status_overlay = StatusLineOverlay::new(
+            &config,
+            frame_requester_clone.clone(),
+            app_event_tx.clone(),
+            status_renderer,
+        );
 
-        Self {
+        let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
-            frame_requester: frame_requester.clone(),
+            frame_requester: frame_requester_clone,
             codex_op_tx,
             bottom_pane: BottomPane::new(BottomPaneParams {
                 frame_requester,
@@ -1093,6 +1220,7 @@ impl ChatWidget {
                 placeholder_text: placeholder,
                 disable_paste_burst: config.disable_paste_burst,
             }),
+            status_overlay,
             active_cell: None,
             config: config.clone(),
             auth_manager,
@@ -1123,7 +1251,17 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
+        };
+        if let Some(overlay) = widget.status_overlay.as_mut() {
+            let queued: Vec<String> = widget
+                .queued_user_messages
+                .iter()
+                .map(|m| m.text.clone())
+                .collect();
+            overlay.bootstrap(&widget.config, widget.token_info.clone(), queued);
         }
+        widget.refresh_queued_user_messages();
+        widget
     }
 
     pub(crate) fn handle_key_event(&mut self, key_event: KeyEvent) {
@@ -1143,21 +1281,8 @@ impl ChatWidget {
                 kind: KeyEventKind::Press,
                 ..
             } if modifiers.contains(KeyModifiers::CONTROL) && c.eq_ignore_ascii_case(&'v') => {
-                match paste_image_to_temp_png() {
-                    Ok((path, info)) => {
-                        self.attach_image(
-                            path,
-                            info.width,
-                            info.height,
-                            info.encoded_format.label(),
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed to paste image: {err}");
-                        self.add_to_history(history_cell::new_error_event(format!(
-                            "Failed to paste image: {err}",
-                        )));
-                    }
+                if let Ok((path, info)) = paste_image_to_temp_png() {
+                    self.attach_image(path, info.width, info.height, info.encoded_format.label());
                 }
                 return;
             }
@@ -1165,6 +1290,13 @@ impl ChatWidget {
                 self.bottom_pane.clear_ctrl_c_quit_hint();
             }
             _ => {}
+        }
+        if key_event.kind == KeyEventKind::Press
+            && key_event.code == KeyCode::Esc
+            && self.bottom_pane.is_task_running()
+        {
+            self.halt_running_task();
+            return;
         }
 
         match key_event {
@@ -1689,7 +1821,10 @@ impl ChatWidget {
             .iter()
             .map(|m| m.text.clone())
             .collect();
-        self.bottom_pane.set_queued_user_messages(messages);
+        self.bottom_pane.set_queued_user_messages(messages.clone());
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_queued_messages(messages);
+        }
     }
 
     pub(crate) fn add_diff_in_progress(&mut self) {
@@ -1938,7 +2073,7 @@ impl ChatWidget {
 
             let warning = "⚠ High reasoning effort can quickly consume Plus plan rate limits.";
             let show_warning =
-                preset.model.starts_with("gpt-5.1-codex") && effort == ReasoningEffortConfig::High;
+                preset.model.starts_with("gpt-5-codex") && effort == ReasoningEffortConfig::High;
             let selected_description = show_warning.then(|| {
                 description
                     .as_ref()
@@ -2487,12 +2622,25 @@ impl ChatWidget {
         }
 
         if self.bottom_pane.is_task_running() {
+            self.halt_running_task();
             self.bottom_pane.show_ctrl_c_quit_hint();
-            self.submit_op(Op::Interrupt);
             return;
         }
 
         self.submit_op(Op::Shutdown);
+    }
+
+    fn halt_running_task(&mut self) {
+        self.bottom_pane.clear_ctrl_c_quit_hint();
+        self.bottom_pane.set_task_running(false);
+        self.bottom_pane.set_interrupt_hint_visible(false);
+        self.running_commands.clear();
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.set_interrupt_hint_visible(false);
+            overlay.complete_task();
+        }
+        self.submit_op(Op::Interrupt);
+        self.request_redraw();
     }
 
     pub(crate) fn composer_is_empty(&self) -> bool {
@@ -2734,6 +2882,16 @@ impl ChatWidget {
         self.token_info = None;
     }
 
+    fn bottom_pane_renderable(&self) -> impl Renderable + '_ {
+        BottomPaneWithOverlay {
+            bottom_pane: &self.bottom_pane,
+            overlay: self
+                .status_overlay
+                .as_ref()
+                .filter(|_| !self.bottom_pane.has_active_view()),
+        }
+    }
+
     fn as_renderable(&self) -> RenderableItem<'_> {
         let active_cell_renderable = match &self.active_cell {
             Some(cell) => RenderableItem::Borrowed(cell).inset(Insets::tlbr(1, 0, 0, 0)),
@@ -2743,7 +2901,8 @@ impl ChatWidget {
         flex.push(1, active_cell_renderable);
         flex.push(
             0,
-            RenderableItem::Borrowed(&self.bottom_pane).inset(Insets::tlbr(1, 0, 0, 0)),
+            RenderableItem::Owned(Box::new(self.bottom_pane_renderable()))
+                .inset(Insets::tlbr(1, 0, 0, 0)),
         );
         RenderableItem::Owned(Box::new(flex))
     }
@@ -2761,6 +2920,66 @@ impl Renderable for ChatWidget {
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         self.as_renderable().cursor_pos(area)
+    }
+}
+
+struct BottomPaneWithOverlay<'a> {
+    bottom_pane: &'a BottomPane,
+    overlay: Option<&'a StatusLineOverlay>,
+}
+
+impl BottomPaneWithOverlay<'_> {
+    fn overlay_layout(&self, area: Rect) -> Option<StatusLineLayout> {
+        let overlay = self.overlay?;
+        overlay.layout(area, self.bottom_pane.has_active_view())
+    }
+}
+
+impl Renderable for BottomPaneWithOverlay<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let overlay_layout = self.overlay_layout(area);
+        if let Some(layout) = overlay_layout {
+            if !layout.pane_area.is_empty() {
+                self.bottom_pane.render(layout.pane_area, buf);
+            } else {
+                self.bottom_pane.render(area, buf);
+            }
+            if !layout.run_pill_area.is_empty() {
+                Clear.render(layout.run_pill_area, buf);
+                if let Some(overlay) = self.overlay {
+                    overlay.render_run_pill(layout.run_pill_area, buf);
+                }
+            }
+            if !layout.status_line_area.is_empty() {
+                Clear.render(layout.status_line_area, buf);
+                if let Some(overlay) = self.overlay {
+                    overlay.render_status_line(layout.status_line_area, buf);
+                }
+            }
+        } else {
+            self.bottom_pane.render(area, buf);
+        }
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        let mut height = self.bottom_pane.desired_height(width);
+        if self.overlay.is_some() && !self.bottom_pane.has_active_view() {
+            height = height.saturating_add(StatusLineOverlay::reserved_rows());
+        }
+        height
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let overlay_layout = self.overlay_layout(area);
+        if let Some(layout) = overlay_layout {
+            if !layout.pane_area.is_empty() {
+                self.bottom_pane.cursor_pos(layout.pane_area)
+            } else {
+                self.bottom_pane.cursor_pos(area)
+            }
+        } else {
+            self.bottom_pane.cursor_pos(area)
+        }
     }
 }
 

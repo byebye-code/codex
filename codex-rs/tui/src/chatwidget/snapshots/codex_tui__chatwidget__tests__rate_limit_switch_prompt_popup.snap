@@ -1,7 +1,9 @@
 ---
 source: tui/src/chatwidget/tests.rs
+assertion_line: 527
 expression: popup
 ---
+<<<<<<< HEAD
   Approaching rate limits
   Switch to gpt-5.1-codex-mini for lower credit usage?
 
@@ -10,5 +12,12 @@ expression: popup
   2. Keep current model
   3. Keep current model (never show again)  Hide future rate limit reminders
                                             about switching models.
+=======
+  Approaching your credits limit
+  Switch to gpt-5-codex-mini to use fewer credits for upcoming turns.
+>>>>>>> main
 
+  1. Switch to gpt-5-codex-mini    Optimized for codex. Cheaper, faster, and
+                                   less capable.
+› 2. Keep current model (current)
   Press enter to confirm or esc to go back

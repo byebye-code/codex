@@ -1,6 +1,11 @@
 use super::*;
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
+use crate::statusline::CustomStatusLineRenderer;
+use crate::statusline::StatusLineOverlay;
+use crate::statusline::StatusLineRenderer;
+use crate::statusline::clear_devspace_override_for_tests;
+use crate::statusline::set_devspace_override_for_tests;
 use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
@@ -51,6 +56,8 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use insta::assert_snapshot;
 use pretty_assertions::assert_eq;
+use ratatui::style::Color;
+use ratatui::style::Style;
 use std::fs::File;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -262,6 +269,7 @@ async fn helpers_are_available_and_do_not_panic() {
         enhanced_keys_supported: false,
         auth_manager,
         feedback: codex_feedback::CodexFeedback::new(),
+        status_renderer: None,
     };
     let mut w = ChatWidget::new(init, conversation_manager);
     // Basic construction sanity.
@@ -269,7 +277,9 @@ async fn helpers_are_available_and_do_not_panic() {
 }
 
 // --- Helpers for tests that need direct construction and event draining ---
-fn make_chatwidget_manual() -> (
+fn make_chatwidget_with_config(
+    cfg: Config,
+) -> (
     ChatWidget,
     tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
     tokio::sync::mpsc::UnboundedReceiver<Op>,
@@ -277,20 +287,29 @@ fn make_chatwidget_manual() -> (
     let (tx_raw, rx) = unbounded_channel::<AppEvent>();
     let app_event_tx = AppEventSender::new(tx_raw);
     let (op_tx, op_rx) = unbounded_channel::<Op>();
-    let cfg = test_config();
+    let frame_requester = FrameRequester::test_dummy();
+    let frame_requester_clone = frame_requester.clone();
     let bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
-        frame_requester: FrameRequester::test_dummy(),
+        frame_requester,
         has_input_focus: true,
         enhanced_keys_supported: false,
         placeholder_text: "Ask Codex to do anything".to_string(),
         disable_paste_burst: false,
     });
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
-    let widget = ChatWidget {
+    let status_overlay = StatusLineOverlay::new(
+        &cfg,
+        frame_requester_clone.clone(),
+        app_event_tx.clone(),
+        cfg.tui_custom_statusline
+            .then(|| Box::new(CustomStatusLineRenderer) as Box<dyn StatusLineRenderer>),
+    );
+    let mut widget = ChatWidget {
         app_event_tx,
         codex_op_tx: op_tx,
         bottom_pane: bottom,
+        status_overlay,
         active_cell: None,
         config: cfg.clone(),
         auth_manager,
@@ -309,7 +328,7 @@ fn make_chatwidget_manual() -> (
         current_status_header: String::from("Working"),
         retry_status_header: None,
         conversation_id: None,
-        frame_requester: FrameRequester::test_dummy(),
+        frame_requester: frame_requester_clone,
         show_welcome_banner: true,
         queued_user_messages: VecDeque::new(),
         suppress_session_configured_redraw: false,
@@ -320,7 +339,31 @@ fn make_chatwidget_manual() -> (
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
     };
+    if let Some(overlay) = widget.status_overlay.as_mut() {
+        overlay.bootstrap(&widget.config, widget.token_info.clone(), Vec::new());
+    }
+    widget.refresh_queued_user_messages();
     (widget, rx, op_rx)
+}
+
+fn make_chatwidget_manual() -> (
+    ChatWidget,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
+    let mut cfg = test_config();
+    cfg.tui_custom_statusline = false;
+    make_chatwidget_with_config(cfg)
+}
+
+fn make_chatwidget_manual_with_custom_statusline() -> (
+    ChatWidget,
+    tokio::sync::mpsc::UnboundedReceiver<AppEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<Op>,
+) {
+    let mut cfg = test_config();
+    cfg.tui_custom_statusline = true;
+    make_chatwidget_with_config(cfg)
 }
 
 pub(crate) fn make_chatwidget_manual_with_sender() -> (
@@ -800,6 +843,33 @@ fn streaming_final_answer_keeps_task_running_state() {
         other => panic!("expected Op::Interrupt, got {other:?}"),
     }
     assert!(chat.bottom_pane.ctrl_c_quit_hint_visible());
+}
+
+#[test]
+fn esc_interrupt_resets_status_indicator_and_statusline() {
+    use std::time::Instant;
+
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual_with_custom_statusline();
+    chat.on_task_started();
+    assert!(chat.bottom_pane.is_task_running());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    let op = op_rx.try_recv().expect("expected interrupt op");
+    assert_matches!(op, Op::Interrupt);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    assert!(!chat.bottom_pane.is_task_running());
+    assert!(!chat.bottom_pane.status_indicator_visible());
+    assert!(!chat.bottom_pane.ctrl_c_quit_hint_visible());
+
+    if let Some(overlay) = chat.status_overlay.as_mut() {
+        let snapshot = overlay.state_mut().snapshot_for_render(Instant::now());
+        let label = snapshot.run_state.expect("run state").label;
+        assert_eq!(label, "Ready when you are");
+    }
+
+    let _ = drain_insert_history(&mut rx);
 }
 
 #[test]
@@ -2755,12 +2825,182 @@ fn deltas_then_same_final_message_are_rendered_snapshot() {
     assert_snapshot!(combined);
 }
 
+#[test]
+fn cursor_row_aligns_with_prompt_when_status_overlay_active() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual_with_custom_statusline();
+    chat.bottom_pane.insert_str("hello");
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let area = ratatui::layout::Rect::new(0, 0, width, height);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    chat.render(area, &mut buf);
+
+    let cursor = chat
+        .cursor_pos(area)
+        .expect("cursor position should be available when overlay is active");
+    let mut prompt_row = None;
+    for y in 0..area.height {
+        let mut row = String::new();
+        for x in 0..area.width {
+            row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+        }
+        if row.contains('›') {
+            prompt_row = Some((y, row));
+            break;
+        }
+    }
+    let (prompt_row_idx, prompt_row_contents) =
+        prompt_row.expect("expected to find composer prompt row");
+    assert_eq!(
+        cursor.1, prompt_row_idx,
+        "cursor should align with composer prompt when status overlay is active: {prompt_row_contents:?}"
+    );
+}
+
+#[test]
+fn typed_input_preserves_padding_and_margin_with_status_overlay() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual_with_custom_statusline();
+    chat.handle_key_event(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+    chat.bottom_pane.insert_str("h");
+
+    let width = 80;
+    assert!(
+        chat.bottom_pane.desired_height(width) >= 3,
+        "expected bottom pane to reserve at least three rows"
+    );
+    let height = chat.desired_height(width);
+    let area = ratatui::layout::Rect::new(0, 0, width, height);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    chat.render(area, &mut buf);
+
+    let bottom_pane_area = Rect::new(
+        area.x,
+        area.y.saturating_add(
+            area.height
+                .saturating_sub(chat.bottom_pane.desired_height(width)),
+        ),
+        area.width,
+        chat.bottom_pane.desired_height(width),
+    );
+    let has_active_view = chat.bottom_pane.has_active_view();
+    let pane_area = if let Some(overlay) = chat.status_overlay.as_ref() {
+        let layout = overlay
+            .layout(bottom_pane_area, has_active_view)
+            .unwrap_or_else(|| {
+                panic!("expected overlay layout to be available for custom status line")
+            });
+        layout.pane_area
+    } else {
+        bottom_pane_area
+    };
+    let [composer_rect, textarea_rect, popup_rect] =
+        chat.bottom_pane.composer_layout_for_tests(pane_area);
+    assert!(
+        popup_rect.height >= 1,
+        "expected popup area to reserve at least padding row: {popup_rect:?}"
+    );
+
+    let padding_y = popup_rect.y;
+    let margin_y = padding_y.saturating_add(1);
+    let expected_padding_bg = crate::style::user_message_style()
+        .bg
+        .unwrap_or(Color::Reset);
+
+    let mut composer_row = String::new();
+    for x in textarea_rect.x..textarea_rect.x.saturating_add(textarea_rect.width) {
+        composer_row.push(
+            buf[(x, textarea_rect.y)]
+                .symbol()
+                .chars()
+                .next()
+                .unwrap_or(' '),
+        );
+    }
+    assert!(
+        composer_row.trim_end().starts_with('h'),
+        "expected composer row to render typed text but saw {composer_row:?}"
+    );
+    assert_eq!(
+        buf[(composer_rect.x, composer_rect.y)].symbol(),
+        "›",
+        "expected prompt glyph to remain on composer row"
+    );
+    for x in popup_rect.x..popup_rect.x.saturating_add(popup_rect.width) {
+        let padding_cell = &buf[(x, padding_y)];
+        assert_eq!(
+            padding_cell.symbol().chars().next().unwrap_or(' '),
+            ' ',
+            "expected composer padding row to contain spaces at ({x},{padding_y})"
+        );
+        let padding_style = padding_cell.style();
+        assert_eq!(
+            padding_style.bg.unwrap_or(Color::Reset),
+            expected_padding_bg,
+            "expected composer padding row to match composer background color"
+        );
+        assert!(
+            padding_style.add_modifier.is_empty(),
+            "expected composer padding row to avoid additional text modifiers"
+        );
+        let margin_cell = &buf[(x, margin_y)];
+        assert_eq!(
+            margin_cell.symbol().chars().next().unwrap_or(' '),
+            ' ',
+            "expected margin row to be blank at ({x},{margin_y})"
+        );
+        assert_eq!(
+            margin_cell.style().bg.unwrap_or(Color::Reset),
+            Style::default().bg.unwrap_or(Color::Reset),
+            "expected margin row to use transparent background"
+        );
+        assert!(
+            margin_cell.style().add_modifier.is_empty(),
+            "expected margin row to avoid additional text modifiers"
+        );
+    }
+
+    let bottom_padding_y = composer_rect
+        .y
+        .saturating_add(composer_rect.height)
+        .saturating_sub(1);
+    let margin_y = popup_rect.y;
+    let input_row_y = composer_rect.y;
+    let input_bg = buf[(composer_rect.x, input_row_y)].style().bg;
+
+    for x in composer_rect.x..composer_rect.x.saturating_add(composer_rect.width) {
+        let bottom_cell = &buf[(x, bottom_padding_y)];
+        assert_eq!(
+            bottom_cell.style().bg,
+            input_bg,
+            "expected bottom padding to retain composer background after typing at cell ({x},{bottom_padding_y})"
+        );
+    }
+
+    let mut margin_row = String::new();
+    for x in popup_rect.x..popup_rect.x.saturating_add(popup_rect.width) {
+        margin_row.push(buf[(x, margin_y)].symbol().chars().next().unwrap_or(' '));
+    }
+    assert!(
+        margin_row.trim().is_empty(),
+        "expected margin row at {margin_y} to remain whitespace after typing: {margin_row:?}"
+    );
+}
+
 // Combined visual snapshot using vt100 for history + direct buffer overlay for UI.
 // This renders the final visual as seen in a terminal: history above, then a blank line,
 // then the exec block, another blank line, the status line, a blank line, and the composer.
 #[test]
 fn chatwidget_exec_and_status_layout_vt100_snapshot() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    set_devspace_override_for_tests(Some("earth".to_string()));
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual_with_custom_statusline();
+    clear_devspace_override_for_tests();
+    if let Some(status_line) = chat.status_line_mut() {
+        status_line.set_devspace(Some("earth".to_string()));
+        status_line.set_hostname(Some("vermissian".to_string()));
+        status_line.set_aws_profile(Some("codex-aws-test".to_string()));
+    }
+    chat.update_statusline_kube_context(Some("codex-dev".to_string()));
     chat.handle_codex_event(Event {
         id: "t1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I’m going to search the repo for where “Change Approved” is rendered to update that view.".into() }),

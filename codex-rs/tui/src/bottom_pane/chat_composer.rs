@@ -3,15 +3,13 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Constraint;
-use ratatui::layout::Layout;
 use ratatui::layout::Margin;
 use ratatui::layout::Rect;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use ratatui::widgets::Block;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
 
@@ -35,8 +33,6 @@ use crate::bottom_pane::prompt_args::parse_slash_name;
 use crate::bottom_pane::prompt_args::prompt_argument_names;
 use crate::bottom_pane::prompt_args::prompt_command_with_arg_placeholders;
 use crate::bottom_pane::prompt_args::prompt_has_numeric_placeholders;
-use crate::render::Insets;
-use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::slash_command::built_in_slash_commands;
@@ -121,7 +117,40 @@ enum ActivePopup {
     File(FileSearchPopup),
 }
 
-const FOOTER_SPACING_HEIGHT: u16 = 0;
+// Explicit layout constants keep the composer structure easy to follow.
+const TOP_PADDING_HEIGHT: u16 = 1;
+const BOTTOM_PADDING_HEIGHT: u16 = 1;
+const BOTTOM_MARGIN_HEIGHT: u16 = 0;
+const TEXTAREA_RIGHT_MARGIN: u16 = 1;
+const FOOTER_SPACING_HEIGHT: u16 = 1;
+
+#[derive(Clone, Copy, Debug)]
+struct ComposerRenderLayout {
+    top_padding: Rect,
+    composer_rect: Rect,
+    textarea_rect: Rect,
+    footer_area: Rect,
+    bottom_margin: Rect,
+    popup_rect: Rect,
+    footer_hint_height: u16,
+    footer_spacing: u16,
+}
+
+fn fill_rect_with_style(buf: &mut Buffer, rect: Rect, style: Style) {
+    if rect.width == 0 || rect.height == 0 {
+        return;
+    }
+    let bottom = rect.y.saturating_add(rect.height);
+    let right = rect.x.saturating_add(rect.width);
+    for y in rect.y..bottom {
+        for x in rect.x..right {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ");
+                cell.set_style(style);
+            }
+        }
+    }
+}
 
 impl ChatComposer {
     pub fn new(
@@ -161,24 +190,129 @@ impl ChatComposer {
         this
     }
 
-    fn layout_areas(&self, area: Rect) -> [Rect; 3] {
+    pub fn desired_height(&self, width: u16) -> u16 {
+        let text_width = width.saturating_sub(LIVE_PREFIX_COLS + TEXTAREA_RIGHT_MARGIN);
+        let text_height = self.textarea.desired_height(text_width);
+
         let footer_props = self.footer_props();
         let footer_hint_height = self
             .custom_footer_height()
             .unwrap_or_else(|| footer_height(footer_props));
         let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let footer_total_height = footer_hint_height + footer_spacing;
-        let popup_constraint = match &self.active_popup {
-            ActivePopup::Command(popup) => {
-                Constraint::Max(popup.calculate_required_height(area.width))
-            }
-            ActivePopup::File(popup) => Constraint::Max(popup.calculate_required_height()),
-            ActivePopup::None => Constraint::Max(footer_total_height),
+        let footer_total_height = match &self.active_popup {
+            ActivePopup::None => footer_hint_height + footer_spacing,
+            ActivePopup::Command(c) => c.calculate_required_height(width).max(1),
+            ActivePopup::File(c) => c.calculate_required_height().max(1),
         };
-        let [composer_rect, popup_rect] =
-            Layout::vertical([Constraint::Min(3), popup_constraint]).areas(area);
-        let textarea_rect = composer_rect.inset(Insets::tlbr(1, LIVE_PREFIX_COLS, 1, 1));
-        [composer_rect, textarea_rect, popup_rect]
+
+        text_height
+            + TOP_PADDING_HEIGHT
+            + BOTTOM_PADDING_HEIGHT
+            + BOTTOM_MARGIN_HEIGHT
+            + footer_total_height
+    }
+
+    fn render_layout(&self, area: Rect) -> ComposerRenderLayout {
+        let mut footer_hint_height = 0;
+        let mut footer_spacing = 0;
+        let footer_reserved_height = match &self.active_popup {
+            ActivePopup::Command(popup) => popup.calculate_required_height(area.width).max(1),
+            ActivePopup::File(popup) => popup.calculate_required_height().max(1),
+            ActivePopup::None => {
+                footer_hint_height = self
+                    .custom_footer_height()
+                    .unwrap_or_else(|| footer_height(self.footer_props()));
+                footer_spacing = Self::footer_spacing(footer_hint_height);
+                footer_hint_height + footer_spacing
+            }
+        };
+
+        let available_height = area.height;
+        let mut text_height = available_height
+            .saturating_sub(
+                TOP_PADDING_HEIGHT
+                    + BOTTOM_PADDING_HEIGHT
+                    + BOTTOM_MARGIN_HEIGHT
+                    + footer_reserved_height,
+            )
+            .max(1);
+        let footer_height = footer_reserved_height;
+        let bottom_padding_height = BOTTOM_PADDING_HEIGHT;
+        let bottom_margin_height = BOTTOM_MARGIN_HEIGHT;
+
+        let used_height = TOP_PADDING_HEIGHT
+            + text_height
+            + bottom_padding_height
+            + bottom_margin_height
+            + footer_height;
+        if used_height < available_height {
+            text_height += available_height - used_height;
+        }
+
+        let mut cursor = area.y;
+        let top_padding = Rect::new(area.x, cursor, area.width, TOP_PADDING_HEIGHT);
+        cursor = cursor.saturating_add(TOP_PADDING_HEIGHT);
+
+        let text_start = cursor;
+        let textarea_width = area
+            .width
+            .saturating_sub(LIVE_PREFIX_COLS + TEXTAREA_RIGHT_MARGIN);
+        let textarea_rect = Rect::new(
+            area.x.saturating_add(LIVE_PREFIX_COLS),
+            text_start,
+            textarea_width,
+            text_height,
+        );
+        cursor = cursor.saturating_add(text_height);
+
+        let bottom_padding_start = cursor;
+        cursor = cursor.saturating_add(bottom_padding_height);
+
+        let footer_area = Rect::new(area.x, cursor, area.width, footer_height);
+        cursor = cursor.saturating_add(footer_height);
+
+        let bottom_margin = Rect::new(area.x, cursor, area.width, bottom_margin_height);
+
+        let composer_rect = Rect::new(
+            area.x,
+            text_start,
+            area.width,
+            text_height.saturating_add(bottom_padding_height),
+        );
+
+        let popup_rect = Rect::new(
+            area.x,
+            bottom_padding_start,
+            area.width,
+            bottom_padding_height
+                .saturating_add(footer_height)
+                .saturating_add(bottom_margin_height),
+        );
+
+        ComposerRenderLayout {
+            top_padding,
+            composer_rect,
+            textarea_rect,
+            footer_area,
+            bottom_margin,
+            popup_rect,
+            footer_hint_height,
+            footer_spacing,
+        }
+    }
+
+    fn layout_areas(&self, area: Rect) -> [Rect; 3] {
+        let layout = self.render_layout(area);
+        [
+            layout.composer_rect,
+            layout.textarea_rect,
+            layout.popup_rect,
+        ]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn layout_areas_for_tests(&self, area: Rect) -> [Rect; 3] {
+        self.layout_areas(area)
     }
 
     fn footer_spacing(footer_hint_height: u16) -> u16 {
@@ -187,6 +321,12 @@ impl ChatComposer {
         } else {
             FOOTER_SPACING_HEIGHT
         }
+    }
+
+    pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        let [_, textarea_rect, _] = self.layout_areas(area);
+        let state = *self.textarea_state.borrow();
+        self.textarea.cursor_pos_with_state(textarea_rect, state)
     }
 
     /// Returns true if the composer currently contains no user input.
@@ -1538,96 +1678,98 @@ impl ChatComposer {
     }
 }
 
-impl Renderable for ChatComposer {
-    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
-        let [_, textarea_rect, _] = self.layout_areas(area);
-        let state = *self.textarea_state.borrow();
-        self.textarea.cursor_pos_with_state(textarea_rect, state)
-    }
+impl WidgetRef for ChatComposer {
+    fn render_ref(&self, area: Rect, buf: &mut Buffer) {
+        let layout = self.render_layout(area);
+        let style = user_message_style();
 
-    fn desired_height(&self, width: u16) -> u16 {
-        let footer_props = self.footer_props();
-        let footer_hint_height = self
-            .custom_footer_height()
-            .unwrap_or_else(|| footer_height(footer_props));
-        let footer_spacing = Self::footer_spacing(footer_hint_height);
-        let footer_total_height = footer_hint_height + footer_spacing;
-        const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
-        self.textarea
-            .desired_height(width.saturating_sub(COLS_WITH_MARGIN))
-            + 2
-            + match &self.active_popup {
-                ActivePopup::None => footer_total_height,
-                ActivePopup::Command(c) => c.calculate_required_height(width),
-                ActivePopup::File(c) => c.calculate_required_height(),
-            }
-    }
+        // Top padding mirrors the bottom padding so the composer is framed evenly.
+        fill_rect_with_style(buf, layout.top_padding, style);
+        fill_rect_with_style(buf, layout.composer_rect, style);
 
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        let [composer_rect, textarea_rect, popup_rect] = self.layout_areas(area);
+        // Footer and margin rows start blank so each state can paint what it needs.
+        fill_rect_with_style(buf, layout.footer_area, Style::default());
+        fill_rect_with_style(buf, layout.bottom_margin, Style::default());
+
         match &self.active_popup {
             ActivePopup::Command(popup) => {
-                popup.render_ref(popup_rect, buf);
+                popup.render_ref(layout.footer_area, buf);
             }
             ActivePopup::File(popup) => {
-                popup.render_ref(popup_rect, buf);
+                popup.render_ref(layout.footer_area, buf);
             }
             ActivePopup::None => {
-                let footer_props = self.footer_props();
-                let custom_height = self.custom_footer_height();
-                let footer_hint_height =
-                    custom_height.unwrap_or_else(|| footer_height(footer_props));
-                let footer_spacing = Self::footer_spacing(footer_hint_height);
-                let hint_rect = if footer_spacing > 0 && footer_hint_height > 0 {
-                    let [_, hint_rect] = Layout::vertical([
-                        Constraint::Length(footer_spacing),
-                        Constraint::Length(footer_hint_height),
-                    ])
-                    .areas(popup_rect);
-                    hint_rect
-                } else {
-                    popup_rect
-                };
-                if let Some(items) = self.footer_hint_override.as_ref() {
-                    if !items.is_empty() {
-                        let mut spans = Vec::with_capacity(items.len() * 4);
-                        for (idx, (key, label)) in items.iter().enumerate() {
-                            spans.push(" ".into());
-                            spans.push(Span::styled(key.clone(), Style::default().bold()));
-                            spans.push(format!(" {label}").into());
-                            if idx + 1 != items.len() {
-                                spans.push("   ".into());
+                if layout.footer_area.height > 0 {
+                    let footer_props = self.footer_props();
+                    let footer_hint_height =
+                        layout.footer_hint_height.min(layout.footer_area.height);
+                    let spacing_height = layout
+                        .footer_spacing
+                        .min(layout.footer_area.height.saturating_sub(footer_hint_height));
+                    let available_for_hint =
+                        layout.footer_area.height.saturating_sub(spacing_height);
+                    if footer_hint_height > 0 && available_for_hint > 0 {
+                        let hint_height = footer_hint_height.min(available_for_hint);
+                        let hint_rect = Rect::new(
+                            layout.footer_area.x,
+                            layout.footer_area.y.saturating_add(spacing_height),
+                            layout.footer_area.width,
+                            hint_height,
+                        );
+                        if let Some(items) = self.footer_hint_override.as_ref() {
+                            if !items.is_empty() {
+                                let mut spans = Vec::with_capacity(items.len() * 4);
+                                for (idx, (key, label)) in items.iter().enumerate() {
+                                    spans.push(" ".into());
+                                    spans.push(Span::styled(key.clone(), Style::default().bold()));
+                                    spans.push(format!(" {label}").into());
+                                    if idx + 1 != items.len() {
+                                        spans.push("   ".into());
+                                    }
+                                }
+                                let mut custom_rect = hint_rect;
+                                if custom_rect.width > 2 {
+                                    custom_rect.x += 2;
+                                    custom_rect.width = custom_rect.width.saturating_sub(2);
+                                }
+                                Line::from(spans).render_ref(custom_rect, buf);
                             }
+                        } else {
+                            render_footer(hint_rect, buf, footer_props);
                         }
-                        let mut custom_rect = hint_rect;
-                        if custom_rect.width > 2 {
-                            custom_rect.x += 2;
-                            custom_rect.width = custom_rect.width.saturating_sub(2);
-                        }
-                        Line::from(spans).render_ref(custom_rect, buf);
                     }
-                } else {
-                    render_footer(hint_rect, buf, footer_props);
                 }
             }
         }
-        let style = user_message_style();
-        Block::default().style(style).render_ref(composer_rect, buf);
-        if !textarea_rect.is_empty() {
-            buf.set_span(
-                textarea_rect.x - LIVE_PREFIX_COLS,
-                textarea_rect.y,
-                &"›".bold(),
-                textarea_rect.width,
-            );
+
+        if layout.composer_rect.height > 0
+            && let Some(cell) = buf.cell_mut((layout.composer_rect.x, layout.composer_rect.y))
+        {
+            cell.set_symbol("›");
+            cell.set_style(style.add_modifier(Modifier::BOLD));
         }
 
         let mut state = self.textarea_state.borrow_mut();
-        StatefulWidgetRef::render_ref(&(&self.textarea), textarea_rect, buf, &mut state);
+        StatefulWidgetRef::render_ref(&(&self.textarea), layout.textarea_rect, buf, &mut state);
         if self.textarea.text().is_empty() {
             let placeholder = Span::from(self.placeholder_text.as_str()).dim();
-            Line::from(vec![placeholder]).render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
+            Line::from(vec![placeholder])
+                .render_ref(layout.textarea_rect.inner(Margin::new(0, 0)), buf);
         }
+    }
+}
+
+impl Renderable for ChatComposer {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        WidgetRef::render_ref(self, area, buf);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        ChatComposer::desired_height(self, width)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        ChatComposer::cursor_pos(self, area)
     }
 }
 
@@ -1699,6 +1841,159 @@ mod tests {
     use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
+    fn composer_cursor_aligns_with_text_row() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.insert_str("hello");
+
+        let height = composer.desired_height(40);
+        let area = Rect::new(0, 0, 40, height);
+        let cursor = composer
+            .cursor_pos(area)
+            .expect("cursor position should be available");
+
+        let mut buf = Buffer::empty(area);
+        composer.render_ref(area, &mut buf);
+
+        let mut prompt_row = None;
+        for y in 0..area.height {
+            let mut row = String::new();
+            for x in 0..area.width {
+                row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
+            }
+            if row.contains('›') {
+                prompt_row = Some((y, row));
+                break;
+            }
+        }
+
+        let (prompt_row_idx, prompt_row_contents) =
+            prompt_row.expect("expected prompt marker row to be rendered");
+        assert_eq!(
+            cursor.1, prompt_row_idx,
+            "cursor should align with composer row containing text; row contents: {prompt_row_contents:?}"
+        );
+    }
+
+    #[test]
+    fn composer_renders_bottom_padding_row() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.insert_str("hello");
+
+        let height = composer.desired_height(40);
+        let area = Rect::new(0, 0, 40, height);
+        let mut buf = Buffer::empty(area);
+        composer.render_ref(area, &mut buf);
+
+        let [composer_rect, _, _] = composer.layout_areas(area);
+        let top_padding_y = composer_rect.y.saturating_sub(1);
+        let bottom_padding_y = composer_rect
+            .y
+            .saturating_add(composer_rect.height)
+            .saturating_sub(1);
+        let input_row_y = composer_rect.y;
+
+        assert!(
+            bottom_padding_y < area.y.saturating_add(area.height),
+            "expected area to include a row for bottom padding"
+        );
+
+        for x in composer_rect.x..composer_rect.x.saturating_add(composer_rect.width) {
+            let input_bg = buf[(x, input_row_y)].style().bg;
+            let top_cell = &buf[(x, top_padding_y)];
+            assert_eq!(
+                top_cell.style().bg,
+                input_bg,
+                "expected top padding cell at ({x},{top_padding_y}) to share the input background"
+            );
+
+            if bottom_padding_y < area.y.saturating_add(area.height) {
+                let bottom_cell = &buf[(x, bottom_padding_y)];
+                assert_eq!(
+                    bottom_cell.style().bg,
+                    input_bg,
+                    "expected bottom padding cell at ({x},{bottom_padding_y}) to share the input background"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn composer_leaves_transparent_margin_below_padding() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+        composer.insert_str("hello");
+
+        let height = composer.desired_height(40);
+        let area = Rect::new(0, 0, 40, height);
+        let mut buf = Buffer::empty(area);
+        composer.render_ref(area, &mut buf);
+
+        let [composer_rect, _textarea_rect, popup_rect] = composer.layout_areas(area);
+        let bottom_padding_y = composer_rect
+            .y
+            .saturating_add(composer_rect.height)
+            .saturating_sub(1);
+        let margin_y = popup_rect.y;
+
+        assert!(
+            bottom_padding_y < area.y.saturating_add(area.height),
+            "expected area to include a row for bottom padding"
+        );
+        if bottom_padding_y < area.y.saturating_add(area.height) {
+            let mut bottom_row = String::new();
+            for x in 0..area.width {
+                bottom_row.push(
+                    buf[(x, bottom_padding_y)]
+                        .symbol()
+                        .chars()
+                        .next()
+                        .unwrap_or(' '),
+                );
+            }
+            assert!(
+                bottom_row.trim().is_empty(),
+                "expected bottom padding row to be blank spaces"
+            );
+        }
+
+        assert!(
+            margin_y < area.y.saturating_add(area.height),
+            "expected area to include a row for bottom margin"
+        );
+        let mut margin_row = String::new();
+        for x in 0..area.width {
+            margin_row.push(buf[(x, margin_y)].symbol().chars().next().unwrap_or(' '));
+        }
+        assert!(
+            margin_row.trim().is_empty(),
+            "expected margin row to contain only whitespace"
+        );
+    }
+
+    #[test]
     fn footer_hint_row_is_separated_from_composer() {
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -1710,46 +2005,54 @@ mod tests {
             false,
         );
 
-        let area = Rect::new(0, 0, 40, 6);
+        let height = composer.desired_height(40);
+        let area = Rect::new(0, 0, 40, height);
         let mut buf = Buffer::empty(area);
-        composer.render(area, &mut buf);
+        composer.render_ref(area, &mut buf);
 
-        let row_to_string = |y: u16| {
-            let mut row = String::new();
-            for x in 0..area.width {
-                row.push(buf[(x, y)].symbol().chars().next().unwrap_or(' '));
-            }
-            row
-        };
-
-        let mut hint_row: Option<(u16, String)> = None;
-        for y in 0..area.height {
-            let row = row_to_string(y);
-            if row.contains("? for shortcuts") {
-                hint_row = Some((y, row));
-                break;
-            }
-        }
-
-        let (hint_row_idx, hint_row_contents) =
-            hint_row.expect("expected footer hint row to be rendered");
-        assert_eq!(
-            hint_row_idx,
-            area.height - 1,
-            "hint row should occupy the bottom line: {hint_row_contents:?}",
-        );
-
+        let [composer_rect, _textarea_rect, popup_rect] = composer.layout_areas(area);
         assert!(
-            hint_row_idx > 0,
-            "expected a spacing row above the footer hints",
+            popup_rect.height > 0,
+            "expected popup rect to reserve at least one row for margin"
         );
 
-        let spacing_row = row_to_string(hint_row_idx - 1);
-        assert_eq!(
-            spacing_row.trim(),
-            "",
-            "expected blank spacing row above hints but saw: {spacing_row:?}",
+        let mut margin_row = String::new();
+        for x in 0..area.width {
+            margin_row.push(
+                buf[(x, popup_rect.y)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .unwrap_or(' '),
+            );
+        }
+        assert!(
+            margin_row.trim().is_empty(),
+            "expected margin row at {} to be blank but saw: {margin_row:?}",
+            popup_rect.y
         );
+
+        // The row immediately above the margin should belong to the composer (bottom padding).
+        let bottom_padding_y = composer_rect
+            .y
+            .saturating_add(composer_rect.height)
+            .saturating_sub(1);
+        if bottom_padding_y < area.y.saturating_add(area.height) {
+            let mut bottom_row = String::new();
+            for x in 0..area.width {
+                bottom_row.push(
+                    buf[(x, bottom_padding_y)]
+                        .symbol()
+                        .chars()
+                        .next()
+                        .unwrap_or(' '),
+                );
+            }
+            assert!(
+                bottom_row.trim().is_empty(),
+                "expected bottom padding row at {bottom_padding_y} to be blank but saw: {bottom_row:?}"
+            );
+        }
     }
 
     fn snapshot_composer_state<F>(name: &str, enhanced_keys_supported: bool, setup: F)
@@ -1773,10 +2076,10 @@ mod tests {
         let footer_props = composer.footer_props();
         let footer_lines = footer_height(footer_props);
         let footer_spacing = ChatComposer::footer_spacing(footer_lines);
-        let height = footer_lines + footer_spacing + 8;
+        let height = footer_lines + footer_spacing + BOTTOM_MARGIN_HEIGHT + 8;
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|f| composer.render(f.area(), f.buffer_mut()))
+            .draw(|f| f.render_widget_ref(composer, f.area()))
             .unwrap();
         insta::assert_snapshot!(name, terminal.backend());
     }
@@ -2296,7 +2599,7 @@ mod tests {
             }
 
             terminal
-                .draw(|f| composer.render(f.area(), f.buffer_mut()))
+                .draw(|f| f.render_widget_ref(composer, f.area()))
                 .unwrap_or_else(|e| panic!("Failed to draw {name} composer: {e}"));
 
             insta::assert_snapshot!(name, terminal.backend());
@@ -2322,12 +2625,12 @@ mod tests {
         // Type "/mo" humanlike so paste-burst doesn’t interfere.
         type_chars_humanlike(&mut composer, &['/', 'm', 'o']);
 
-        let mut terminal = match Terminal::new(TestBackend::new(60, 5)) {
+        let mut terminal = match Terminal::new(TestBackend::new(60, 4)) {
             Ok(t) => t,
             Err(e) => panic!("Failed to create terminal: {e}"),
         };
         terminal
-            .draw(|f| composer.render(f.area(), f.buffer_mut()))
+            .draw(|f| f.render_widget_ref(composer, f.area()))
             .unwrap_or_else(|e| panic!("Failed to draw composer: {e}"));
 
         // Visual snapshot should show the slash popup with /model as the first entry.

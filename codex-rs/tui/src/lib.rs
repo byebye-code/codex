@@ -66,6 +66,7 @@ mod shimmer;
 mod slash_command;
 mod status;
 mod status_indicator_widget;
+mod statusline;
 mod streaming;
 mod style;
 mod terminal_palette;

@@ -1068,7 +1068,6 @@ dependencies = [
  "chrono",
  "codex-app-server-protocol",
  "codex-apply-patch",
- "codex-arg0",
  "codex-async-utils",
  "codex-file-search",
  "codex-git",
@@ -1083,12 +1082,12 @@ dependencies = [
  "codex-windows-sandbox",
  "core-foundation 0.9.4",
  "core_test_support",
- "ctor 0.5.0",
  "dirs",
  "dunce",
  "env-flags",
  "escargot",
  "eventsource-stream",
+ "fs2",
  "futures",
  "http",
  "image",
@@ -1453,6 +1452,7 @@ dependencies = [
  "diffy",
  "dirs",
  "dunce",
+ "hostname",
  "image",
  "insta",
  "itertools 0.14.0",
@@ -2524,6 +2524,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
