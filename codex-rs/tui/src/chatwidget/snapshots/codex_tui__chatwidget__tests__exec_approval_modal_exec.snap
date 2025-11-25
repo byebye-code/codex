@@ -1,5 +1,9 @@
 ---
 source: tui/src/chatwidget/tests.rs
+<<<<<<< HEAD
+=======
+assertion_line: 562
+>>>>>>> main
 expression: "format!(\"{buf:?}\")"
 ---
 Buffer {

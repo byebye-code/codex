@@ -268,6 +268,7 @@ impl App {
                     enhanced_keys_supported,
                     auth_manager: auth_manager.clone(),
                     feedback: feedback.clone(),
+                    status_renderer: None,
                 };
                 ChatWidget::new(init, conversation_manager.clone())
             }
@@ -291,6 +292,7 @@ impl App {
                     enhanced_keys_supported,
                     auth_manager: auth_manager.clone(),
                     feedback: feedback.clone(),
+                    status_renderer: None,
                 };
                 ChatWidget::new_from_existing(
                     init,
@@ -442,6 +444,7 @@ impl App {
                     enhanced_keys_supported: self.enhanced_keys_supported,
                     auth_manager: self.auth_manager.clone(),
                     feedback: self.feedback.clone(),
+                    status_renderer: None,
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 if let Some(summary) = summary {
@@ -551,6 +554,14 @@ impl App {
             }
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
+            }
+            AppEvent::StatusLineGit(snapshot) => {
+                self.chat_widget.update_statusline_git(snapshot);
+                tui.frame_requester().schedule_frame();
+            }
+            AppEvent::StatusLineKubeContext(context) => {
+                self.chat_widget.update_statusline_kube_context(context);
+                tui.frame_requester().schedule_frame();
             }
             AppEvent::OpenFullAccessConfirmation { preset } => {
                 self.chat_widget.open_full_access_confirmation(preset);

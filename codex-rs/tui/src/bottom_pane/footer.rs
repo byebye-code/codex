@@ -72,29 +72,22 @@ pub(crate) fn render_footer(area: Rect, buf: &mut Buffer, props: FooterProps) {
 }
 
 fn footer_lines(props: FooterProps) -> Vec<Line<'static>> {
-    // Show the context indicator on the left, appended after the primary hint
-    // (e.g., "? for shortcuts"). Keep it visible even when typing (i.e., when
-    // the shortcut hint is hidden). Hide it only for the multi-line
-    // ShortcutOverlay.
+    // Show context indicators only when explicitly requested. The default
+    // summary mode intentionally renders nothing so the footer stays hidden
+    // during normal operation.
     match props.mode {
         FooterMode::CtrlCReminder => vec![ctrl_c_reminder_line(CtrlCReminderState {
             is_task_running: props.is_task_running,
         })],
-        FooterMode::ShortcutSummary => {
-            let mut line = context_window_line(props.context_window_percent);
-            line.push_span(" · ".dim());
-            line.extend(vec![
-                key_hint::plain(KeyCode::Char('?')).into(),
-                " for shortcuts".dim(),
-            ]);
-            vec![line]
-        }
+        FooterMode::ShortcutSummary => Vec::new(),
         FooterMode::ShortcutOverlay => shortcut_overlay_lines(ShortcutsState {
             use_shift_enter_hint: props.use_shift_enter_hint,
             esc_backtrack_hint: props.esc_backtrack_hint,
         }),
         FooterMode::EscHint => vec![esc_hint_line(props.esc_backtrack_hint)],
-        FooterMode::ContextOnly => vec![context_window_line(props.context_window_percent)],
+        FooterMode::ContextOnly => context_window_line(props.context_window_percent)
+            .map(|line| vec![line])
+            .unwrap_or_default(),
     }
 }
 
@@ -221,9 +214,9 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn context_window_line(percent: Option<i64>) -> Line<'static> {
-    let percent = percent.unwrap_or(100).clamp(0, 100);
-    Line::from(vec![Span::from(format!("{percent}% context left")).dim()])
+fn context_window_line(_percent: Option<i64>) -> Option<Line<'static>> {
+    let _ = _percent;
+    None
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -468,5 +461,26 @@ mod tests {
                 context_window_percent: Some(72),
             },
         );
+    }
+
+    #[test]
+    fn footer_hides_context_meter() {
+        let lines = super::footer_lines(FooterProps {
+            mode: FooterMode::ShortcutSummary,
+            esc_backtrack_hint: false,
+            use_shift_enter_hint: false,
+            is_task_running: false,
+            context_window_percent: Some(88),
+        });
+        for line in lines {
+            let mut text = String::new();
+            for span in line.spans {
+                text.push_str(span.content.as_ref());
+            }
+            assert!(
+                !text.contains("context left"),
+                "context meter should be hidden, saw: {text:?}"
+            );
+        }
     }
 }
