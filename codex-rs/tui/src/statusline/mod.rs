@@ -94,7 +94,7 @@ fn segment_fill(color: Color) -> Style {
 }
 
 fn status_spinner(start_time: Option<Instant>) -> Span<'static> {
-    let mut span = spinner(start_time);
+    let mut span = spinner(start_time, true);
     if span.content.as_ref() == "•" {
         return "◦".dim();
     }

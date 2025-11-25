@@ -73,12 +73,11 @@ fn persist_workspace_state(
         fs::create_dir_all(parent)?;
     }
 
-    let mut temp =
-        NamedTempFile::new_in(path.parent().ok_or_else(|| {
-            std::io::Error::other("missing parent dir")
-        })?)?;
-    let serialized = toml::to_string_pretty(&state)
-        .map_err(std::io::Error::other)?;
+    let mut temp = NamedTempFile::new_in(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("missing parent dir"))?,
+    )?;
+    let serialized = toml::to_string_pretty(&state).map_err(std::io::Error::other)?;
     temp.write_all(serialized.as_bytes())?;
     temp.flush()?;
     temp.persist(&path).map_err(|err| err.error)?;
