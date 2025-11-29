@@ -89,4 +89,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run 88code-release.yml
+          gh workflow run 88code-release.yml --repo ${{ github.repository }}
