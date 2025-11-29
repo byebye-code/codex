@@ -2,7 +2,7 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '0 16 * * *'  # UTC 16:00 = Beijing 00:00
+    - cron: '20 16 * * *'  # UTC 16:20 = Beijing 00:20
   workflow_dispatch:
 
 jobs:
