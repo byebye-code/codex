@@ -46,12 +46,51 @@ jobs:
         id: merge
         if: steps.check.outputs.has_updates == 'true'
         run: |
+          # Files that should always keep our version (ours strategy)
+          OURS_FILES=(
+            "codex-rs/common/src/model_presets.rs"
+          )
+
           if git merge upstream/main --no-edit; then
             echo "status=success" >> $GITHUB_OUTPUT
             git push origin main
           else
-            echo "status=conflict" >> $GITHUB_OUTPUT
-            git merge --abort
+            echo "Merge conflict detected, attempting auto-resolution..."
+
+            # Get list of conflicted files
+            CONFLICTED=$(git diff --name-only --diff-filter=U)
+            UNRESOLVED=""
+
+            for file in $CONFLICTED; do
+              KEEP_OURS=false
+              for ours_file in "${OURS_FILES[@]}"; do
+                if [ "$file" = "$ours_file" ]; then
+                  KEEP_OURS=true
+                  break
+                fi
+              done
+
+              if [ "$KEEP_OURS" = true ]; then
+                echo "Auto-resolving conflict in $file (keeping ours)"
+                git checkout --ours "$file"
+                git add "$file"
+              else
+                UNRESOLVED="$UNRESOLVED $file"
+              fi
+            done
+
+            # Check if all conflicts are resolved
+            REMAINING=$(git diff --name-only --diff-filter=U)
+            if [ -z "$REMAINING" ]; then
+              echo "All conflicts auto-resolved"
+              git commit --no-edit
+              echo "status=success" >> $GITHUB_OUTPUT
+              git push origin main
+            else
+              echo "Unresolved conflicts remain: $REMAINING"
+              echo "status=conflict" >> $GITHUB_OUTPUT
+              git merge --abort
+            fi
           fi
 
       - name: Create PR on conflict
