@@ -246,12 +246,10 @@ static PRESETS: Lazy<Vec<ModelPreset>> = Lazy::new(|| {
 });
 
 pub fn builtin_model_presets(auth_mode: Option<AuthMode>) -> Vec<ModelPreset> {
+    let _ = auth_mode; // Ignore auth_mode, show all models
     PRESETS
         .iter()
-        .filter(|preset| match auth_mode {
-            Some(AuthMode::ApiKey) => preset.show_in_picker && preset.id != "gpt-5.1-codex-max",
-            _ => preset.show_in_picker,
-        })
+        .filter(|preset| preset.show_in_picker)
         .cloned()
         .collect()
 }
@@ -272,12 +270,12 @@ mod tests {
     }
 
     #[test]
-    fn gpt_5_1_codex_max_hidden_for_api_key_auth() {
+    fn gpt_5_1_codex_max_visible_for_api_key_auth() {
         let presets = builtin_model_presets(Some(AuthMode::ApiKey));
         assert!(
             presets
                 .iter()
-                .all(|preset| preset.id != "gpt-5.1-codex-max")
+                .any(|preset| preset.id == "gpt-5.1-codex-max")
         );
     }
 }
