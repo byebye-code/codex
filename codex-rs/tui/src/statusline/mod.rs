@@ -1050,21 +1050,15 @@ impl<'a> RenderModel<'a> {
         let text = match self.env.code88_variant {
             Code88Variant::Full => {
                 // "88code LV5 $61.57|$16.71|57.8M|1008次"
-                format!(
-                    "88code {} ${:.2}|${:.2}|{}|{}次",
-                    tier, daily_cost, daily_avail, tokens_str, daily_requests
-                )
+                format!("88code {tier} ${daily_cost:.2}|${daily_avail:.2}|{tokens_str}|{daily_requests}次")
             }
             Code88Variant::Compact => {
                 // "88code LV5 61.6|16.7|57.8M|1008"
-                format!(
-                    "88code {} {:.1}|{:.1}|{}|{}",
-                    tier, daily_cost, daily_avail, tokens_str, daily_requests
-                )
+                format!("88code {tier} {daily_cost:.1}|{daily_avail:.1}|{tokens_str}|{daily_requests}")
             }
             Code88Variant::Minimal => {
                 // "88 LV5 $61.57|$16.71"
-                format!("88 {} ${:.2}|${:.2}", tier, daily_cost, daily_avail)
+                format!("88 {tier} ${daily_cost:.2}|${daily_avail:.2}")
             }
             Code88Variant::Hidden => return None,
         };

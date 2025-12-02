@@ -422,15 +422,15 @@ pub(crate) async fn fetch_timeline(
 /// This sums up `currentCredits` from all subscriptions where `isActive=true`.
 /// Falls back to the single subscription's `currentCredits` if no subscription list.
 fn calculate_total_available(usage_data: &Code88Data) -> Option<f64> {
-    if let Some(subscriptions) = &usage_data.subscription_entity_list {
-        if !subscriptions.is_empty() {
-            let total: f64 = subscriptions
-                .iter()
-                .filter(|sub| sub.is_active.unwrap_or(false))
-                .filter_map(|sub| sub.current_credits)
-                .sum();
-            return Some(total);
-        }
+    if let Some(subscriptions) = &usage_data.subscription_entity_list
+        && !subscriptions.is_empty()
+    {
+        let total: f64 = subscriptions
+            .iter()
+            .filter(|sub| sub.is_active.unwrap_or(false))
+            .filter_map(|sub| sub.current_credits)
+            .sum();
+        return Some(total);
     }
     // Fallback to single subscription credits
     usage_data.current_credits

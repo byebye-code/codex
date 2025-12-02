@@ -1333,11 +1333,11 @@ impl Config {
             struct TokenFile {
                 token: String,
             }
-            if let Ok(tf) = serde_json::from_str::<TokenFile>(&contents) {
-                if !tf.token.is_empty() {
-                    // Format as 88code API key
-                    return Some(format!("88_{}", tf.token));
-                }
+            if let Ok(tf) = serde_json::from_str::<TokenFile>(&contents)
+                && !tf.token.is_empty()
+            {
+                // Format as 88code API key
+                return Some(format!("88_{}", tf.token));
             }
         }
 

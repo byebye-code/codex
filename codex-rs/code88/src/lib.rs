@@ -145,9 +145,7 @@ fn parse_token_from_response(body: &str) -> Result<String> {
         return Err(Code88Error::ApiError(resp.code));
     }
 
-    resp.data
-        .map(|d| d.token)
-        .ok_or(Code88Error::NoToken)
+    resp.data.map(|d| d.token).ok_or(Code88Error::NoToken)
 }
 
 /// Prompt user for manual token input as fallback.

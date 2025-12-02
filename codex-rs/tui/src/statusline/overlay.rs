@@ -209,10 +209,11 @@ impl StatusLineOverlay {
 
     pub(crate) fn update_88code(&mut self, data: Option<StatusLine88CodeSnapshot>) {
         // Check if token expired and trigger refresh
-        if let Some(ref info) = data {
-            if info.token_expired && !self.token_refresh_in_progress.load(Ordering::SeqCst) {
-                self.spawn_token_refresh();
-            }
+        if let Some(ref info) = data
+            && info.token_expired
+            && !self.token_refresh_in_progress.load(Ordering::SeqCst)
+        {
+            self.spawn_token_refresh();
         }
         self.state.set_88code_info(data);
     }
