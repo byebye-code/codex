@@ -1,9 +1,12 @@
 //! Token storage and retrieval.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::DateTime;
+use chrono::Utc;
+use serde::Deserialize;
+use serde::Serialize;
 use tracing::debug;
 
 use crate::Code88Error;
@@ -94,11 +97,7 @@ pub fn save_token_with_source(
     {
         use std::os::unix::fs::OpenOptionsExt;
         let mut options = std::fs::OpenOptions::new();
-        options
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600);
+        options.write(true).create(true).truncate(true).mode(0o600);
         let mut file = options.open(&path)?;
         std::io::Write::write_all(&mut file, content.as_bytes())?;
     }

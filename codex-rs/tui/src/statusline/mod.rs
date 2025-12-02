@@ -201,16 +201,26 @@ pub(crate) struct StatusLineDevspaceSnapshot {
 /// 88code usage information snapshot for status line display.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct StatusLine88CodeSnapshot {
-    /// Subscription tier name (e.g., "PRO", "FREE").
-    pub subscription_name: Option<String>,
-    /// Total credit limit for the subscription.
-    pub credit_limit: Option<f64>,
-    /// Current remaining credits.
+    /// Service tier (e.g., "LV5", "LV3", "LV1").
+    pub service_tier: Option<String>,
+    /// Current subscription remaining credits.
     pub current_credits: Option<f64>,
+    /// Current subscription credit limit.
+    pub credit_limit: Option<f64>,
+    /// Today's total cost (consumed credits).
+    pub daily_cost: Option<f64>,
+    /// Today's total available quota (remaining credits).
+    pub daily_available: Option<f64>,
+    /// Today's total tokens used.
+    pub daily_tokens: Option<i64>,
+    /// Today's total requests.
+    pub daily_requests: Option<i64>,
     /// True if the API request failed.
     pub is_error: bool,
     /// Error message for debugging (shown in status bar).
     pub error_msg: Option<String>,
+    /// True if token has expired and needs browser re-login.
+    pub token_expired: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -365,17 +375,6 @@ impl EnvironmentInclusion {
             code88_variant: Code88Variant::Full,
         }
     }
-
-    fn empty() -> Self {
-        Self {
-            hostname: false,
-            aws_profile: false,
-            kubernetes: false,
-            devspace: false,
-            code88: false,
-            code88_variant: Code88Variant::Hidden,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -432,29 +431,59 @@ pub(crate) fn render_status_run_pill(
     model.token_variant = TokenVariant::Hidden;
     model.context_variant = ContextVariant::Hidden;
     model.git_variant = GitVariant::Hidden;
-    model.env = EnvironmentInclusion::empty();
+    // Keep 88code visible in the run pill area (input box upper-right)
+    model.env = EnvironmentInclusion {
+        hostname: false,
+        aws_profile: false,
+        kubernetes: false,
+        devspace: false,
+        code88: snapshot.environment.code88.is_some(),
+        code88_variant: Code88Variant::Full,
+    };
     model.include_queue_preview = true;
     model.show_interrupt_hint = false;
 
     let mut attempts = 0usize;
     loop {
-        let segments = model.run_state_segments(snapshot.run_state.as_ref());
-        let spans = capsule_spans(segments);
-        let mut line = Line::from(spans.clone());
-        let display_width = line_display_width(&line);
-        if display_width <= target_width {
-            if display_width < target_width {
-                let padding = " ".repeat(target_width - display_width);
-                line.spans.push(Span::raw(padding));
+        // Left side: run state segments (timer, spinner, label)
+        let left_segments = model.run_state_segments(snapshot.run_state.as_ref());
+        let left_spans = capsule_spans(left_segments);
+        let left_line = Line::from(left_spans.clone());
+        let left_width = line_display_width(&left_line);
+
+        // Right side: 88code segment (right-aligned)
+        let right_spans = if let Some(segment) = model.build_88code_segment() {
+            capsule_spans(vec![segment])
+        } else {
+            Vec::new()
+        };
+        let right_line = Line::from(right_spans.clone());
+        let right_width = line_display_width(&right_line);
+
+        // Calculate total width and padding
+        let total_content_width = left_width + right_width;
+        if total_content_width <= target_width {
+            let padding_width = target_width - total_content_width;
+            let mut final_spans = left_spans;
+            if padding_width > 0 {
+                final_spans.push(Span::raw(" ".repeat(padding_width)));
             }
-            return line;
+            final_spans.extend(right_spans);
+            return Line::from(final_spans);
         }
+
+        // Content too wide, try to degrade
         if !degrade_run_capsule(&mut model) {
-            return truncate_line_to_width(Line::from(spans), target_width);
+            // Cannot degrade further, truncate
+            let mut all_spans = left_spans;
+            all_spans.extend(right_spans);
+            return truncate_line_to_width(Line::from(all_spans), target_width);
         }
         attempts += 1;
         if attempts > 8 {
-            return truncate_line_to_width(Line::from(spans), target_width);
+            let mut all_spans = left_spans;
+            all_spans.extend(right_spans);
+            return truncate_line_to_width(Line::from(all_spans), target_width);
         }
     }
 }
@@ -922,13 +951,8 @@ impl<'a> RenderModel<'a> {
 
     fn collect_right_segments(&self) -> Vec<PowerlineSegment> {
         let mut segments: Vec<PowerlineSegment> = Vec::new();
-        // 88code segment - display at the right side
-        if self.env.code88
-            && self.env.code88_variant != Code88Variant::Hidden
-            && let Some(segment) = self.build_88code_segment()
-        {
-            segments.push(segment);
-        }
+        // 88code segment is only shown in run_pill (input box area), not in bottom status line
+        // to avoid duplicate display
         if self.env.devspace
             && let Some(devspace) = self.snapshot.environment.devspace.as_ref()
         {
@@ -985,6 +1009,11 @@ impl<'a> RenderModel<'a> {
     fn build_88code_segment(&self) -> Option<PowerlineSegment> {
         let info = self.snapshot.environment.code88.as_ref()?;
 
+        // Token expired state - show re-login hint
+        if info.token_expired {
+            return Some(PowerlineSegment::text(RED, "88code Token过期".to_string()));
+        }
+
         // Error state - show error message for debugging
         if info.is_error {
             let err_text = if let Some(msg) = &info.error_msg {
@@ -1002,45 +1031,58 @@ impl<'a> RenderModel<'a> {
         }
 
         // Loading state - data not yet fetched
-        if info.subscription_name.is_none() && info.credit_limit.is_none() {
+        if info.service_tier.is_none() && info.credit_limit.is_none() {
             return Some(PowerlineSegment::text(SUBTEXT0, "88code ...".to_string()));
         }
 
-        let current = info.current_credits.unwrap_or(0.0);
-        let limit = info.credit_limit.unwrap_or(0.0);
-        let sub_name = info.subscription_name.as_deref().unwrap_or("");
+        // Extract values with defaults
+        let tier = info.service_tier.as_deref().unwrap_or("?");
+        let daily_cost = info.daily_cost.unwrap_or(0.0);
+        let daily_avail = info.daily_available.unwrap_or(0.0);
+        let daily_tokens = info.daily_tokens.unwrap_or(0);
+        let daily_requests = info.daily_requests.unwrap_or(0);
 
+        // Format tokens as xxM (e.g., 25674093 -> "25.67M")
+        let tokens_str = format_token_count(daily_tokens);
+
+        // Build styled spans for consistent look with other segments
+        let mut spans: Vec<Span<'static>> = Vec::new();
+
+        // Format: "88code LV5 $当日总消耗额度|$当日总可用额度|tokens|requests次"
         let text = match self.env.code88_variant {
             Code88Variant::Full => {
-                // "88code PRO $59.33/$60.00"
-                format!("88code {sub_name} ${current:.2}/${limit:.2}")
+                // "88code LV5 $61.57|$16.71|57.8M|1008次"
+                format!(
+                    "88code {} ${:.2}|${:.2}|{}|{}次",
+                    tier, daily_cost, daily_avail, tokens_str, daily_requests
+                )
             }
             Code88Variant::Compact => {
-                // "88 PRO 59.3/60"
-                format!("88 {sub_name} {current:.1}/{limit:.0}")
+                // "88code LV5 61.6|16.7|57.8M|1008"
+                format!(
+                    "88code {} {:.1}|{:.1}|{}|{}",
+                    tier, daily_cost, daily_avail, tokens_str, daily_requests
+                )
             }
             Code88Variant::Minimal => {
-                // "88 59/60"
-                format!("88 {current:.0}/{limit:.0}")
+                // "88 LV5 $61.57|$16.71"
+                format!("88 {} ${:.2}|${:.2}", tier, daily_cost, daily_avail)
             }
             Code88Variant::Hidden => return None,
         };
+        spans.push(Span::raw(text));
 
-        // Choose color based on credit remaining percentage
-        let color = if limit > 0.0 {
-            let ratio = current / limit;
-            if ratio < 0.1 {
-                RED // Less than 10% - danger
-            } else if ratio < 0.2 {
-                YELLOW // Less than 20% - warning
-            } else {
-                PEACH // Normal - orange
-            }
+        // Choose color based on daily available credits
+        // Assuming a baseline of ~20$ daily limit for color thresholds
+        let color = if daily_avail < 5.0 {
+            RED // Less than $5 remaining - danger
+        } else if daily_avail < 10.0 {
+            YELLOW // Less than $10 remaining - warning
         } else {
-            PEACH
+            PEACH // Normal - orange
         };
 
-        Some(PowerlineSegment::text(color, text))
+        Some(PowerlineSegment::from_spans(color, spans))
     }
 
     fn render_middle(&self, width: usize) -> Option<(Vec<Span<'static>>, usize)> {
@@ -1118,7 +1160,12 @@ impl<'a> RenderModel<'a> {
 }
 
 fn degrade_run_capsule(model: &mut RenderModel<'_>) -> bool {
-    const OPS: &[DegradeOp] = &[DegradeOp::DropQueuePreview, DegradeOp::HideRunTimer];
+    const OPS: &[DegradeOp] = &[
+        DegradeOp::DropQueuePreview,
+        DegradeOp::Simplify88Code,
+        DegradeOp::Drop88Code,
+        DegradeOp::HideRunTimer,
+    ];
     for op in OPS {
         if model.apply_degrade(*op) {
             return true;

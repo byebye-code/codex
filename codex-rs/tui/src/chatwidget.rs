@@ -387,6 +387,12 @@ impl ChatWidget {
         }
     }
 
+    pub(crate) fn update_88code_api_key(&mut self, token: String) {
+        if let Some(overlay) = self.status_overlay.as_mut() {
+            overlay.update_api_key(token);
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn set_status_renderer(&mut self, renderer: Box<dyn StatusLineRenderer>) {
         if let Some(overlay) = self.status_overlay.as_mut() {

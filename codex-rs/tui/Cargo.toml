@@ -31,6 +31,7 @@ codex-ansi-escape = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-arg0 = { workspace = true }
 codex-backend-client = { workspace = true }
+codex-code88 = { workspace = true }
 codex-common = { workspace = true, features = [
     "cli",
     "elapsed",
@@ -90,6 +91,7 @@ tree-sitter-highlight = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 url = { workspace = true }
+urlencoding = "2.1"
 
 codex-windows-sandbox = { workspace = true }
 

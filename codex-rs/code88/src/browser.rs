@@ -1,9 +1,12 @@
 //! Browser detection and launch with remote debugging.
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::Child;
+use std::process::Command;
 
-use tracing::{debug, info};
+use tracing::debug;
+use tracing::info;
 
 use crate::Code88Error;
 
@@ -226,10 +229,7 @@ pub fn launch_with_debug(browser_path: &Path, url: &str) -> Result<BrowserInstan
         "--no-first-run",
         "--no-default-browser-check",
         // Create a separate user data directory to avoid conflicts
-        &format!(
-            "--user-data-dir={}",
-            temp_user_data_dir().to_string_lossy()
-        ),
+        &format!("--user-data-dir={}", temp_user_data_dir().to_string_lossy()),
         url,
     ]);
 

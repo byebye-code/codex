@@ -3,15 +3,20 @@
 //! This module implements a minimal CDP client for network monitoring.
 //! It only supports the features needed for capturing login responses.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
-use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use futures::SinkExt;
+use futures::StreamExt;
+use serde_json::Value;
+use serde_json::json;
 use tokio::net::TcpStream;
-use tokio_tungstenite::{
-    connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream,
-};
-use tracing::{debug, trace};
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::debug;
+use tracing::trace;
 
 use crate::Code88Error;
 
@@ -101,7 +106,10 @@ impl CdpSession {
 
                 // If it's an event, log it and continue waiting
                 if data.get("method").is_some() {
-                    trace!("Received CDP event while waiting for response: {:?}", data.get("method"));
+                    trace!(
+                        "Received CDP event while waiting for response: {:?}",
+                        data.get("method")
+                    );
                 }
             }
         }
@@ -183,9 +191,9 @@ impl CdpSession {
             )
             .await?;
 
-        let result = response.get("result").ok_or_else(|| {
-            Code88Error::CdpResponseError("No result in response".to_string())
-        })?;
+        let result = response
+            .get("result")
+            .ok_or_else(|| Code88Error::CdpResponseError("No result in response".to_string()))?;
 
         let body = result
             .get("body")
@@ -216,6 +224,16 @@ impl CdpSession {
     pub async fn navigate(&mut self, url: &str) -> Result<(), Code88Error> {
         debug!("Navigating to: {}", url);
         self.send_command("Page.navigate", json!({ "url": url }))
+            .await?;
+        Ok(())
+    }
+
+    /// Reload the current page.
+    pub async fn reload(&mut self) -> Result<(), Code88Error> {
+        debug!("Reloading page");
+        // Enable Page domain first if not already enabled
+        let _ = self.send_command("Page.enable", json!({})).await;
+        self.send_command("Page.reload", json!({ "ignoreCache": false }))
             .await?;
         Ok(())
     }

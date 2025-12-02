@@ -587,6 +587,15 @@ impl App {
                 self.chat_widget.update_statusline_88code(data);
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::Refresh88CodeTokenResult(result) => match result {
+                Ok(token) => {
+                    self.chat_widget.update_88code_api_key(token);
+                    tui.frame_requester().schedule_frame();
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to refresh 88code token: {}", e);
+                }
+            },
             AppEvent::OpenFullAccessConfirmation { preset } => {
                 self.chat_widget.open_full_access_confirmation(preset);
             }

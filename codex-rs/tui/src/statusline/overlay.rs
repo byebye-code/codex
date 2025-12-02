@@ -1,15 +1,18 @@
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
 use crate::statusline::StatusLine88CodeSnapshot;
 use crate::statusline::StatusLineGitSnapshot;
 use crate::statusline::StatusLineRenderer;
-use crate::statusline::code88_api::fetch_88code_usage;
+use crate::statusline::code88_api::fetch_88code_aggregated;
 use crate::statusline::state::StatusLineState;
 use crate::text_formatting::truncate_text;
 use codex_core::config::Config;
@@ -26,6 +29,8 @@ use tokio::process::Command;
 use tokio::runtime::Handle;
 use tokio::task::spawn_blocking;
 
+use codex_code88 as code88;
+
 use super::CustomStatusLineRenderer;
 
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +45,12 @@ pub(crate) struct StatusLineOverlay {
     state: StatusLineState,
     app_event_tx: AppEventSender,
     cwd: PathBuf,
+    codex_home: PathBuf,
+    /// 88_ prefixed API key for usage API (from settings.json)
     code88_api_key: Option<String>,
+    /// Login token from 88code-token.json for getLoginInfo API
+    code88_login_token: Option<String>,
+    token_refresh_in_progress: Arc<AtomicBool>,
 }
 
 impl StatusLineOverlay {
@@ -67,11 +77,20 @@ impl StatusLineOverlay {
         }
         let renderer = renderer.unwrap_or_else(|| Box::new(CustomStatusLineRenderer));
         let state = StatusLineState::with_renderer(config, frame_requester, renderer);
+
+        let codex_home = config.codex_home.clone();
+
+        // Load login token from 88code-token.json
+        let code88_login_token = code88::load_token(&codex_home);
+
         Some(Self {
             state,
             app_event_tx,
             cwd: config.cwd.clone(),
+            codex_home,
             code88_api_key: config.tui_code88_api_key.clone(),
+            code88_login_token,
+            token_refresh_in_progress: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -87,8 +106,8 @@ impl StatusLineOverlay {
         self.state.set_queued_messages(queued_messages);
         self.spawn_git_refresh();
         self.spawn_kube_refresh();
-        // Initialize 88code with loading state if API key is configured
-        if self.code88_api_key.is_some() {
+        // Initialize 88code with loading state if both tokens are configured
+        if self.code88_login_token.is_some() && self.code88_api_key.is_some() {
             self.state.set_88code_info(Some(StatusLine88CodeSnapshot {
                 is_error: false,
                 ..Default::default()
@@ -142,6 +161,10 @@ impl StatusLineOverlay {
     }
 
     fn spawn_88code_refresh(&self) {
+        // Need both login_token (for getLoginInfo) and api_key (for usage API)
+        let Some(login_token) = self.code88_login_token.clone() else {
+            return; // No login token, skip refresh
+        };
         let Some(api_key) = self.code88_api_key.clone() else {
             return; // No API key configured, skip refresh
         };
@@ -150,19 +173,28 @@ impl StatusLineOverlay {
         };
         let tx = self.app_event_tx.clone();
         handle.spawn(async move {
-            let snapshot = match fetch_88code_usage(&api_key).await {
+            let snapshot = match fetch_88code_aggregated(&login_token, &api_key).await {
                 Ok(data) => Some(StatusLine88CodeSnapshot {
-                    subscription_name: data.subscription_name,
-                    credit_limit: data.credit_limit,
+                    service_tier: data.service_tier,
                     current_credits: data.current_credits,
+                    credit_limit: data.credit_limit,
+                    daily_cost: data.daily_cost,
+                    daily_available: data.daily_available,
+                    daily_tokens: data.daily_tokens,
+                    daily_requests: data.daily_requests,
                     is_error: false,
                     error_msg: None,
+                    token_expired: false,
                 }),
-                Err(e) => Some(StatusLine88CodeSnapshot {
-                    is_error: true,
-                    error_msg: Some(e.to_string()),
-                    ..Default::default()
-                }),
+                Err(e) => {
+                    let token_expired = e.is_token_expired();
+                    Some(StatusLine88CodeSnapshot {
+                        is_error: true,
+                        error_msg: Some(e.to_string()),
+                        token_expired,
+                        ..Default::default()
+                    })
+                }
             };
             tx.send(AppEvent::StatusLine88Code(snapshot));
         });
@@ -177,7 +209,63 @@ impl StatusLineOverlay {
     }
 
     pub(crate) fn update_88code(&mut self, data: Option<StatusLine88CodeSnapshot>) {
+        // Check if token expired and trigger refresh
+        if let Some(ref info) = data {
+            if info.token_expired && !self.token_refresh_in_progress.load(Ordering::SeqCst) {
+                self.spawn_token_refresh();
+            }
+        }
         self.state.set_88code_info(data);
+    }
+
+    /// Spawn a background task to refresh the 88code token via browser login.
+    pub(crate) fn spawn_token_refresh(&self) {
+        // Prevent multiple concurrent refresh attempts
+        if self.token_refresh_in_progress.swap(true, Ordering::SeqCst) {
+            return; // Already refreshing
+        }
+
+        let Ok(handle) = Handle::try_current() else {
+            self.token_refresh_in_progress
+                .store(false, Ordering::SeqCst);
+            return;
+        };
+
+        let codex_home = self.codex_home.clone();
+        let tx = self.app_event_tx.clone();
+        let in_progress = self.token_refresh_in_progress.clone();
+
+        handle.spawn(async move {
+            let result = code88::refresh_token(&codex_home).await;
+            in_progress.store(false, Ordering::SeqCst);
+
+            match result {
+                Ok(token) => {
+                    tx.send(AppEvent::Refresh88CodeTokenResult(Ok(token)));
+                }
+                Err(e) => {
+                    tx.send(AppEvent::Refresh88CodeTokenResult(Err(e.to_string())));
+                }
+            }
+        });
+    }
+
+    /// Update tokens after successful token refresh.
+    /// The token parameter is the raw login token from 88code-token.json.
+    pub(crate) fn update_api_key(&mut self, token: String) {
+        // Store the raw login token for getLoginInfo API
+        self.code88_login_token = Some(token.clone());
+
+        // Format the token as the API key (88_ prefix) for usage API
+        let api_key = if token.starts_with("88_") {
+            token
+        } else {
+            format!("88_{token}")
+        };
+        self.code88_api_key = Some(api_key);
+
+        // Trigger a refresh to fetch new data with the new tokens
+        self.spawn_88code_refresh();
     }
 
     pub(crate) fn set_renderer(&mut self, renderer: Box<dyn StatusLineRenderer>) {

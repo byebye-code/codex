@@ -12,12 +12,16 @@ mod error;
 mod token;
 
 pub use error::Code88Error;
-pub use token::{delete_token, load_token, save_token, token_path};
+pub use token::delete_token;
+pub use token::load_token;
+pub use token::save_token;
+pub use token::token_path;
 
 use std::path::Path;
 use std::time::Duration;
 
-use tracing::{info, warn};
+use tracing::info;
+use tracing::warn;
 
 const LOGIN_URL: &str = "https://www.88code.org/";
 const TOKEN_API_PATTERN: &str = "/admin-api/login/getLoginInfo";
@@ -70,15 +74,25 @@ pub async fn run_browser_login(codex_home: &Path, timeout_secs: u64) -> Result<S
         let mut cdp = cdp::CdpSession::connect(&instance.debug_url()).await?;
         cdp.enable_network().await?;
 
-        eprintln!("88code: 请在浏览器中完成登录，登录成功后将自动获取 token...\n");
+        eprintln!("88code: 正在自动刷新页面获取 token...");
 
-        // 5. Wait for login response
+        // 5. Auto-reload page to trigger getLoginInfo API
+        // Wait a bit for page to be ready before reload
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if let Err(e) = cdp.reload().await {
+            warn!("Failed to auto-reload page: {}, user needs to refresh manually", e);
+            eprintln!("88code: 自动刷新失败，请手动刷新网页或完成登录...\n");
+        } else {
+            eprintln!("88code: 页面已刷新，等待获取 token...\n");
+        }
+
+        // 6. Wait for login response
         let body = cdp.wait_for_response(TOKEN_API_PATTERN).await?;
 
-        // 6. Parse token from response
+        // 7. Parse token from response
         let token = parse_token_from_response(&body)?;
 
-        // 7. Close CDP session
+        // 8. Close CDP session
         let _ = cdp.close().await;
 
         Ok::<String, Code88Error>(token)
@@ -161,6 +175,38 @@ pub async fn ensure_token_with_fallback(codex_home: &Path) -> Result<String> {
         Ok(token) => Ok(token),
         Err(e) => {
             warn!("Auto login failed: {}, falling back to manual input", e);
+            let token = prompt_manual_token_input()?;
+            save_token(codex_home, &token)?;
+            Ok(token)
+        }
+    }
+}
+
+/// Force refresh the 88code token by deleting existing token and running browser login.
+///
+/// This is used when the existing token has expired and needs to be refreshed.
+/// Unlike `ensure_token`, this function always runs the browser login flow.
+///
+/// Returns the new token string on success.
+pub async fn refresh_token(codex_home: &Path) -> Result<String> {
+    info!("Refreshing 88code token (existing token expired)");
+
+    // Delete existing token first
+    if let Err(e) = delete_token(codex_home) {
+        warn!("Failed to delete old token: {}", e);
+    }
+
+    // Run browser login to get new token
+    eprintln!("\n88code: Token已过期，需要重新登录...");
+    run_browser_login(codex_home, DEFAULT_TIMEOUT_SECS).await
+}
+
+/// Force refresh token with fallback to manual input.
+pub async fn refresh_token_with_fallback(codex_home: &Path) -> Result<String> {
+    match refresh_token(codex_home).await {
+        Ok(token) => Ok(token),
+        Err(e) => {
+            warn!("Auto refresh failed: {}, falling back to manual input", e);
             let token = prompt_manual_token_input()?;
             save_token(codex_home, &token)?;
             Ok(token)

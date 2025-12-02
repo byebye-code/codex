@@ -72,7 +72,9 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
 
 async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
     // 88code: Fetch latest version from npm registry
-    let NpmPackageInfo { version: latest_version } = create_client()
+    let NpmPackageInfo {
+        version: latest_version,
+    } = create_client()
         .get(NPM_REGISTRY_URL)
         .send()
         .await?

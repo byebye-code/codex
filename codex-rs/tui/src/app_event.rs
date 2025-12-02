@@ -53,6 +53,8 @@ pub(crate) enum AppEvent {
     StatusLineKubeContext(Option<String>),
     /// Background 88code usage updates for the custom status line.
     StatusLine88Code(Option<StatusLine88CodeSnapshot>),
+    /// Result of 88code token refresh (triggered automatically when token expires).
+    Refresh88CodeTokenResult(Result<String, String>),
 
     /// Result of computing a `/diff` command.
     DiffResult(String),
