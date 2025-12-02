@@ -143,9 +143,7 @@ pub(crate) struct TimelineDayEntry {
 pub(crate) struct Code88AggregatedData {
     /// Service tier (e.g., "LV5", "LV3", "LV1").
     pub service_tier: Option<String>,
-    /// Current subscription remaining credits.
-    pub current_credits: Option<f64>,
-    /// Current subscription credit limit.
+    /// Current subscription credit limit (used for loading state detection).
     pub credit_limit: Option<f64>,
     /// Today's total cost (consumed credits).
     pub daily_cost: Option<f64>,
@@ -539,7 +537,6 @@ pub(crate) async fn fetch_88code_aggregated(
 
     Ok(Code88AggregatedData {
         service_tier,
-        current_credits: usage_data.current_credits,
         credit_limit: usage_data.credit_limit,
         daily_cost,
         daily_available,

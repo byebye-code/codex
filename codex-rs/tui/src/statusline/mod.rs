@@ -203,9 +203,7 @@ pub(crate) struct StatusLineDevspaceSnapshot {
 pub(crate) struct StatusLine88CodeSnapshot {
     /// Service tier (e.g., "LV5", "LV3", "LV1").
     pub service_tier: Option<String>,
-    /// Current subscription remaining credits.
-    pub current_credits: Option<f64>,
-    /// Current subscription credit limit.
+    /// Current subscription credit limit (used for loading state detection).
     pub credit_limit: Option<f64>,
     /// Today's total cost (consumed credits).
     pub daily_cost: Option<f64>,

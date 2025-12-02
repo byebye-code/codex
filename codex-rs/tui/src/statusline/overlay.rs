@@ -176,7 +176,6 @@ impl StatusLineOverlay {
             let snapshot = match fetch_88code_aggregated(&login_token, &api_key).await {
                 Ok(data) => Some(StatusLine88CodeSnapshot {
                     service_tier: data.service_tier,
-                    current_credits: data.current_credits,
                     credit_limit: data.credit_limit,
                     daily_cost: data.daily_cost,
                     daily_available: data.daily_available,
