@@ -94,6 +94,7 @@ url = { workspace = true }
 urlencoding = "2.1"
 
 codex-windows-sandbox = { workspace = true }
+tokio-util = { workspace = true, features = ["time"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

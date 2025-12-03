@@ -1152,7 +1152,9 @@ impl CodexMessageProcessor {
 
         let cwd = params.cwd.unwrap_or_else(|| self.config.cwd.clone());
         let env = create_env(&self.config.shell_environment_policy);
-        let timeout_ms = params.timeout_ms;
+        let timeout_ms = params
+            .timeout_ms
+            .and_then(|timeout_ms| u64::try_from(timeout_ms).ok());
         let exec_params = ExecParams {
             command: params.command,
             cwd,
@@ -2453,6 +2455,7 @@ impl CodexMessageProcessor {
                 let turn = Turn {
                     id: turn_id.clone(),
                     items: vec![],
+                    error: None,
                     status: TurnStatus::InProgress,
                 };
 
@@ -2494,6 +2497,7 @@ impl CodexMessageProcessor {
         Turn {
             id: turn_id,
             items,
+            error: None,
             status: TurnStatus::InProgress,
         }
     }

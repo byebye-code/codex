@@ -637,7 +637,8 @@ pub struct FeedbackUploadResponse {
 #[ts(export_to = "v2/")]
 pub struct CommandExecParams {
     pub command: Vec<String>,
-    pub timeout_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub timeout_ms: Option<i64>,
     pub cwd: Option<PathBuf>,
     pub sandbox_policy: Option<SandboxPolicy>,
 }
@@ -785,6 +786,7 @@ pub struct Thread {
     /// Model provider used for this thread (for example, 'openai').
     pub model_provider: String,
     /// Unix timestamp (in seconds) when the thread was created.
+    #[ts(type = "number")]
     pub created_at: i64,
     /// [UNSTABLE] Path to the thread on disk.
     pub path: PathBuf,
@@ -875,8 +877,9 @@ pub struct Turn {
     /// For all other responses and notifications returning a Turn,
     /// the items field will be an empty list.
     pub items: Vec<ThreadItem>,
-    #[serde(flatten)]
     pub status: TurnStatus,
+    /// Only populated when the Turn's status is failed.
+    pub error: Option<TurnError>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS, Error)]
@@ -898,12 +901,12 @@ pub struct ErrorNotification {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
-#[serde(tag = "status", rename_all = "camelCase")]
-#[ts(tag = "status", export_to = "v2/")]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub enum TurnStatus {
     Completed,
     Interrupted,
-    Failed { error: TurnError },
+    Failed,
     InProgress,
 }
 
@@ -1072,6 +1075,7 @@ pub enum ThreadItem {
         /// The command's exit code.
         exit_code: Option<i32>,
         /// The duration of the command execution in milliseconds.
+        #[ts(type = "number | null")]
         duration_ms: Option<i64>,
     },
     #[serde(rename_all = "camelCase")]
@@ -1338,6 +1342,7 @@ pub struct ReasoningSummaryTextDeltaNotification {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
+    #[ts(type = "number")]
     pub summary_index: i64,
 }
 
@@ -1348,6 +1353,7 @@ pub struct ReasoningSummaryPartAddedNotification {
     pub thread_id: String,
     pub turn_id: String,
     pub item_id: String,
+    #[ts(type = "number")]
     pub summary_index: i64,
 }
 
@@ -1359,6 +1365,7 @@ pub struct ReasoningTextDeltaNotification {
     pub turn_id: String,
     pub item_id: String,
     pub delta: String,
+    #[ts(type = "number")]
     pub content_index: i64,
 }
 
@@ -1493,7 +1500,9 @@ impl From<CoreRateLimitSnapshot> for RateLimitSnapshot {
 #[ts(export_to = "v2/")]
 pub struct RateLimitWindow {
     pub used_percent: i32,
+    #[ts(type = "number | null")]
     pub window_duration_mins: Option<i64>,
+    #[ts(type = "number | null")]
     pub resets_at: Option<i64>,
 }
 

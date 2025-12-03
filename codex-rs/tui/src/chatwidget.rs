@@ -20,6 +20,7 @@ use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::DeprecationNoticeEvent;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::Event;
@@ -588,7 +589,8 @@ impl ChatWidget {
                 self.apply_token_info(info_inner);
             }
             None => {
-                self.bottom_pane.set_context_window_percent(None);
+                self.bottom_pane.set_context_window(None, None);
+                self.token_info = None;
             }
         }
         if let Some(overlay) = self.status_overlay.as_mut() {
@@ -598,7 +600,8 @@ impl ChatWidget {
 
     fn apply_token_info(&mut self, info: TokenUsageInfo) {
         let percent = self.context_remaining_percent(&info);
-        self.bottom_pane.set_context_window_percent(percent);
+        let used_tokens = self.context_used_tokens(&info, percent.is_some());
+        self.bottom_pane.set_context_window(percent, used_tokens);
         self.token_info = Some(info);
     }
 
@@ -611,12 +614,20 @@ impl ChatWidget {
             })
     }
 
+    fn context_used_tokens(&self, info: &TokenUsageInfo, percent_known: bool) -> Option<i64> {
+        if percent_known {
+            return None;
+        }
+
+        Some(info.total_token_usage.tokens_in_context_window())
+    }
+
     fn restore_pre_review_token_info(&mut self) {
         if let Some(saved) = self.pre_review_token_info.take() {
             match saved {
                 Some(info) => self.apply_token_info(info),
                 None => {
-                    self.bottom_pane.set_context_window_percent(None);
+                    self.bottom_pane.set_context_window(None, None);
                     self.token_info = None;
                 }
             }
@@ -624,7 +635,19 @@ impl ChatWidget {
     }
 
     pub(crate) fn on_rate_limit_snapshot(&mut self, snapshot: Option<RateLimitSnapshot>) {
-        if let Some(snapshot) = snapshot {
+        if let Some(mut snapshot) = snapshot {
+            if snapshot.credits.is_none() {
+                snapshot.credits = self
+                    .rate_limit_snapshot
+                    .as_ref()
+                    .and_then(|display| display.credits.as_ref())
+                    .map(|credits| CreditsSnapshot {
+                        has_credits: credits.has_credits,
+                        unlimited: credits.unlimited,
+                        balance: credits.balance.clone(),
+                    });
+            }
+
             let warnings = self.rate_limit_warnings.take_warnings(
                 snapshot
                     .secondary
@@ -1511,9 +1534,24 @@ impl ChatWidget {
                 modifiers,
                 kind: KeyEventKind::Press,
                 ..
-            } if modifiers.contains(KeyModifiers::CONTROL) && c.eq_ignore_ascii_case(&'v') => {
-                if let Ok((path, info)) = paste_image_to_temp_png() {
-                    self.attach_image(path, info.width, info.height, info.encoded_format.label());
+            } if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                && c.eq_ignore_ascii_case(&'v') =>
+            {
+                match paste_image_to_temp_png() {
+                    Ok((path, info)) => {
+                        self.attach_image(
+                            path,
+                            info.width,
+                            info.height,
+                            info.encoded_format.label(),
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to paste image: {err}");
+                        self.add_to_history(history_cell::new_error_event(format!(
+                            "Failed to paste image: {err}",
+                        )));
+                    }
                 }
                 return;
             }

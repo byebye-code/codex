@@ -23,6 +23,7 @@ use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
@@ -304,6 +305,41 @@ fn token_count_none_resets_context_indicator() {
     assert_eq!(chat.bottom_pane.context_window_percent(), None);
 }
 
+#[test]
+fn context_indicator_shows_used_tokens_when_window_unknown() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual();
+
+    chat.config.model_context_window = None;
+    let auto_compact_limit = 200_000;
+    chat.config.model_auto_compact_token_limit = Some(auto_compact_limit);
+
+    // No model window, so the indicator should fall back to showing tokens used.
+    let total_tokens = 106_000;
+    let token_usage = TokenUsage {
+        total_tokens,
+        ..TokenUsage::default()
+    };
+    let token_info = TokenUsageInfo {
+        total_token_usage: token_usage.clone(),
+        last_token_usage: token_usage,
+        model_context_window: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "token-usage".into(),
+        msg: EventMsg::TokenCount(TokenCountEvent {
+            info: Some(token_info),
+            rate_limits: None,
+        }),
+    });
+
+    assert_eq!(chat.bottom_pane.context_window_percent(), None);
+    assert_eq!(
+        chat.bottom_pane.context_window_used_tokens(),
+        Some(total_tokens)
+    );
+}
+
 #[cfg_attr(
     target_os = "macos",
     ignore = "system configuration APIs are blocked under macOS seatbelt"
@@ -526,6 +562,53 @@ fn test_rate_limit_warnings_monthly() {
             "Heads up, you've used over 75% of your monthly limit. Run /status for a breakdown.",
         ),],
         "expected one warning per limit for the highest crossed threshold"
+    );
+}
+
+#[test]
+fn rate_limit_snapshot_keeps_prior_credits_when_missing_from_headers() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual();
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: None,
+        secondary: None,
+        credits: Some(CreditsSnapshot {
+            has_credits: true,
+            unlimited: false,
+            balance: Some("17.5".to_string()),
+        }),
+    }));
+    let initial_balance = chat
+        .rate_limit_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.credits.as_ref())
+        .and_then(|credits| credits.balance.as_deref());
+    assert_eq!(initial_balance, Some("17.5"));
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        primary: Some(RateLimitWindow {
+            used_percent: 80.0,
+            window_minutes: Some(60),
+            resets_at: Some(123),
+        }),
+        secondary: None,
+        credits: None,
+    }));
+
+    let display = chat
+        .rate_limit_snapshot
+        .as_ref()
+        .expect("rate limits should be cached");
+    let credits = display
+        .credits
+        .as_ref()
+        .expect("credits should persist when headers omit them");
+
+    assert_eq!(credits.balance.as_deref(), Some("17.5"));
+    assert!(!credits.unlimited);
+    assert_eq!(
+        display.primary.as_ref().map(|window| window.used_percent),
+        Some(80.0)
     );
 }
 

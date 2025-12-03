@@ -976,6 +976,7 @@ impl Session {
             .read()
             .await
             .resolve_elicitation(server_name, id, response)
+            .await
     }
 
     /// Records input items: always append to conversation history and
@@ -2038,6 +2039,13 @@ pub(crate) async fn run_task(
                 // Aborted turn is reported via a different event.
                 break;
             }
+            Err(CodexErr::InvalidImageRequest()) => {
+                let mut state = sess.state.lock().await;
+                error_or_panic(
+                    "Invalid image detected, replacing it in the last turn to prevent poisoning",
+                );
+                state.history.replace_last_turn_images("Invalid image");
+            }
             Err(e) => {
                 info!("Turn error: {e:#}");
                 let event = EventMsg::Error(e.to_error_event(None));
@@ -2145,6 +2153,8 @@ async fn run_turn(
             }
             Err(CodexErr::UsageNotIncluded) => return Err(CodexErr::UsageNotIncluded),
             Err(e @ CodexErr::QuotaExceeded) => return Err(e),
+            Err(e @ CodexErr::InvalidImageRequest()) => return Err(e),
+            Err(e @ CodexErr::InvalidRequest(_)) => return Err(e),
             Err(e @ CodexErr::RefreshTokenFailed(_)) => return Err(e),
             Err(e) => {
                 // Use the configured provider-specific stream retry budget.
@@ -2480,7 +2490,10 @@ mod tests {
     use crate::tools::format_exec_output_str;
 
     use crate::protocol::CompactedItem;
+    use crate::protocol::CreditsSnapshot;
     use crate::protocol::InitialHistory;
+    use crate::protocol::RateLimitSnapshot;
+    use crate::protocol::RateLimitWindow;
     use crate::protocol::ResumedHistory;
     use crate::state::TaskKind;
     use crate::tasks::SessionTask;
@@ -2548,6 +2561,75 @@ mod tests {
             session.state.lock().await.clone_history().get_history()
         });
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn set_rate_limits_retains_previous_credits() {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )
+        .expect("load default test config");
+        let config = Arc::new(config);
+        let session_configuration = SessionConfiguration {
+            provider: config.model_provider.clone(),
+            model: config.model.clone(),
+            model_reasoning_effort: config.model_reasoning_effort,
+            model_reasoning_summary: config.model_reasoning_summary,
+            developer_instructions: config.developer_instructions.clone(),
+            user_instructions: config.user_instructions.clone(),
+            base_instructions: config.base_instructions.clone(),
+            compact_prompt: config.compact_prompt.clone(),
+            approval_policy: config.approval_policy,
+            sandbox_policy: config.sandbox_policy.clone(),
+            cwd: config.cwd.clone(),
+            original_config_do_not_use: Arc::clone(&config),
+            features: Features::default(),
+            exec_policy: Arc::new(ExecPolicy::empty()),
+            session_source: SessionSource::Exec,
+        };
+
+        let mut state = SessionState::new(session_configuration);
+        let initial = RateLimitSnapshot {
+            primary: Some(RateLimitWindow {
+                used_percent: 10.0,
+                window_minutes: Some(15),
+                resets_at: Some(1_700),
+            }),
+            secondary: None,
+            credits: Some(CreditsSnapshot {
+                has_credits: true,
+                unlimited: false,
+                balance: Some("10.00".to_string()),
+            }),
+        };
+        state.set_rate_limits(initial.clone());
+
+        let update = RateLimitSnapshot {
+            primary: Some(RateLimitWindow {
+                used_percent: 40.0,
+                window_minutes: Some(30),
+                resets_at: Some(1_800),
+            }),
+            secondary: Some(RateLimitWindow {
+                used_percent: 5.0,
+                window_minutes: Some(60),
+                resets_at: Some(1_900),
+            }),
+            credits: None,
+        };
+        state.set_rate_limits(update.clone());
+
+        assert_eq!(
+            state.latest_rate_limits,
+            Some(RateLimitSnapshot {
+                primary: update.primary.clone(),
+                secondary: update.secondary,
+                credits: initial.credits,
+            })
+        );
     }
 
     #[test]
