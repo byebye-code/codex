@@ -203,16 +203,21 @@ pub(crate) struct StatusLineDevspaceSnapshot {
 pub(crate) struct StatusLine88CodeSnapshot {
     /// Service tier (e.g., "LV5", "LV3", "LV1").
     pub service_tier: Option<String>,
-    /// Current subscription credit limit (used for loading state detection).
-    pub credit_limit: Option<f64>,
-    /// Today's total cost (consumed credits).
+    /// Today's total cost in USD.
     pub daily_cost: Option<f64>,
-    /// Today's total available quota (remaining credits).
-    pub daily_available: Option<f64>,
     /// Today's total tokens used.
     pub daily_tokens: Option<i64>,
-    /// Today's total requests.
+    /// Today's total requests (reserved for future use).
+    #[allow(dead_code)]
     pub daily_requests: Option<i64>,
+    /// Today's input tokens.
+    pub input_tokens: Option<i64>,
+    /// Today's output tokens.
+    pub output_tokens: Option<i64>,
+    /// Today's cache create tokens (cache write).
+    pub cache_create_tokens: Option<i64>,
+    /// Today's cache read tokens.
+    pub cache_read_tokens: Option<i64>,
     /// True if the API request failed.
     pub is_error: bool,
     /// Error message for debugging (shown in status bar).
@@ -1029,52 +1034,58 @@ impl<'a> RenderModel<'a> {
         }
 
         // Loading state - data not yet fetched
-        if info.service_tier.is_none() && info.credit_limit.is_none() {
+        if info.service_tier.is_none() && info.daily_tokens.is_none() {
             return Some(PowerlineSegment::text(SUBTEXT0, "88code ...".to_string()));
         }
 
         // Extract values with defaults
         let tier = info.service_tier.as_deref().unwrap_or("?");
         let daily_cost = info.daily_cost.unwrap_or(0.0);
-        let daily_avail = info.daily_available.unwrap_or(0.0);
         let daily_tokens = info.daily_tokens.unwrap_or(0);
-        let daily_requests = info.daily_requests.unwrap_or(0);
+        let input_tokens = info.input_tokens.unwrap_or(0);
+        let output_tokens = info.output_tokens.unwrap_or(0);
+        let cache_create = info.cache_create_tokens.unwrap_or(0);
+        let cache_read = info.cache_read_tokens.unwrap_or(0);
 
-        // Format tokens as xxM (e.g., 25674093 -> "25.67M")
-        let tokens_str = format_token_count(daily_tokens);
+        // Format tokens (e.g., 287093 -> "287.09K", 11918798 -> "11.92M")
+        let total_str = format_token_count(daily_tokens);
+        let input_str = format_token_count(input_tokens);
+        let output_str = format_token_count(output_tokens);
+        let cache_in_str = format_token_count(cache_create);
+        let cache_out_str = format_token_count(cache_read);
 
-        // Build styled spans for consistent look with other segments
-        let mut spans: Vec<Span<'static>> = Vec::new();
-
-        // Format: "88code LV5 $当日总消耗额度|$当日总可用额度|tokens|requests次"
+        // Format based on variant:
+        // Full: "88 LV5 ↑287K ↓68K ⇆864K/10.7M Σ11.9M $12.57"
+        // Compact: "88 LV5 11.9M $12.57"
+        // Minimal: "88 $12.57"
         let text = match self.env.code88_variant {
             Code88Variant::Full => {
-                // "88code LV5 $61.57|$16.71|57.8M|1008次"
-                format!("88code {tier} ${daily_cost:.2}|${daily_avail:.2}|{tokens_str}|{daily_requests}次")
+                // Full: input/output/cache_in/cache_out/total/cost
+                format!(
+                    "88 {tier} ↑{input_str} ↓{output_str} ⇆{cache_in_str}/{cache_out_str} Σ{total_str} ${daily_cost:.2}"
+                )
             }
             Code88Variant::Compact => {
-                // "88code LV5 61.6|16.7|57.8M|1008"
-                format!("88code {tier} {daily_cost:.1}|{daily_avail:.1}|{tokens_str}|{daily_requests}")
+                // Compact: total tokens and cost
+                format!("88 {tier} Σ{total_str} ${daily_cost:.2}")
             }
             Code88Variant::Minimal => {
-                // "88 LV5 $61.57|$16.71"
-                format!("88 {tier} ${daily_cost:.2}|${daily_avail:.2}")
+                // Minimal: just cost
+                format!("88 ${daily_cost:.2}")
             }
             Code88Variant::Hidden => return None,
         };
-        spans.push(Span::raw(text));
 
-        // Choose color based on daily available credits
-        // Assuming a baseline of ~20$ daily limit for color thresholds
-        let color = if daily_avail < 5.0 {
-            RED // Less than $5 remaining - danger
-        } else if daily_avail < 10.0 {
-            YELLOW // Less than $10 remaining - warning
+        // Choose color based on daily cost
+        let color = if daily_cost > 50.0 {
+            RED // High spending - danger
+        } else if daily_cost > 20.0 {
+            YELLOW // Moderate spending - warning
         } else {
             PEACH // Normal - orange
         };
 
-        Some(PowerlineSegment::from_spans(color, spans))
+        Some(PowerlineSegment::text(color, text))
     }
 
     fn render_middle(&self, width: usize) -> Option<(Vec<Span<'static>>, usize)> {
@@ -1317,19 +1328,9 @@ fn format_token_count(value: i64) -> String {
     let clamped = value.max(0);
     let value_f64 = clamped as f64;
     if value_f64 >= MILLION {
-        let mut formatted = format!("{:.1}M", value_f64 / MILLION);
-        if formatted.ends_with(".0M") {
-            formatted.truncate(formatted.len() - 3);
-            formatted.push('M');
-        }
-        formatted
+        format!("{:.2}M", value_f64 / MILLION)
     } else if value_f64 >= THOUSAND {
-        let mut formatted = format!("{:.1}k", value_f64 / THOUSAND);
-        if formatted.ends_with(".0k") {
-            formatted.truncate(formatted.len() - 3);
-            formatted.push('k');
-        }
-        formatted
+        format!("{:.2}K", value_f64 / THOUSAND)
     } else {
         clamped.to_string()
     }

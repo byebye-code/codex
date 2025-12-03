@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use crate::app_event::AppEvent;
 use crate::app_event_sender::AppEventSender;
@@ -28,6 +29,7 @@ use ratatui::widgets::Widget as _;
 use tokio::process::Command;
 use tokio::runtime::Handle;
 use tokio::task::spawn_blocking;
+use tokio::task::JoinHandle;
 
 use codex_code88 as code88;
 
@@ -40,7 +42,6 @@ pub(crate) struct StatusLineLayout {
     pub status_line_area: Rect,
 }
 
-#[derive(Debug)]
 pub(crate) struct StatusLineOverlay {
     state: StatusLineState,
     app_event_tx: AppEventSender,
@@ -51,6 +52,8 @@ pub(crate) struct StatusLineOverlay {
     /// Login token from 88code-token.json for getLoginInfo API
     code88_login_token: Option<String>,
     token_refresh_in_progress: Arc<AtomicBool>,
+    /// Background poller for 88code usage data
+    code88_poller: Option<JoinHandle<()>>,
 }
 
 impl StatusLineOverlay {
@@ -91,6 +94,7 @@ impl StatusLineOverlay {
             code88_api_key: config.tui_code88_api_key.clone(),
             code88_login_token,
             token_refresh_in_progress: Arc::new(AtomicBool::new(false)),
+            code88_poller: None,
         })
     }
 
@@ -113,7 +117,7 @@ impl StatusLineOverlay {
                 ..Default::default()
             }));
         }
-        self.spawn_88code_refresh();
+        self.start_88code_poller();
     }
 
     pub(crate) fn sync_model(&mut self, config: &Config) {
@@ -130,7 +134,7 @@ impl StatusLineOverlay {
     pub(crate) fn spawn_background_tasks(&self) {
         self.spawn_git_refresh();
         self.spawn_kube_refresh();
-        self.spawn_88code_refresh();
+        // 88code is handled by the poller, no need to manually refresh here
     }
 
     pub(crate) fn refresh_git(&self) {
@@ -160,43 +164,82 @@ impl StatusLineOverlay {
         });
     }
 
-    fn spawn_88code_refresh(&self) {
-        // Need both login_token (for getLoginInfo) and api_key (for usage API)
+    /// Polling interval for 88code usage data (10 seconds).
+    const CODE88_POLL_INTERVAL: Duration = Duration::from_secs(10);
+    /// Maximum backoff multiplier for consecutive errors (60 seconds max).
+    const MAX_BACKOFF_MULTIPLIER: u32 = 6;
+
+    /// Start background polling for 88code usage data.
+    fn start_88code_poller(&mut self) {
+        self.stop_88code_poller();
+
         let Some(login_token) = self.code88_login_token.clone() else {
-            return; // No login token, skip refresh
+            return;
         };
         let Some(api_key) = self.code88_api_key.clone() else {
-            return; // No API key configured, skip refresh
+            return;
         };
         let Ok(handle) = Handle::try_current() else {
             return;
         };
+
         let tx = self.app_event_tx.clone();
-        handle.spawn(async move {
-            let snapshot = match fetch_88code_aggregated(&login_token, &api_key).await {
-                Ok(data) => Some(StatusLine88CodeSnapshot {
-                    service_tier: data.service_tier,
-                    credit_limit: data.credit_limit,
-                    daily_cost: data.daily_cost,
-                    daily_available: data.daily_available,
-                    daily_tokens: data.daily_tokens,
-                    daily_requests: data.daily_requests,
-                    is_error: false,
-                    error_msg: None,
-                    token_expired: false,
-                }),
-                Err(e) => {
-                    let token_expired = e.is_token_expired();
-                    Some(StatusLine88CodeSnapshot {
-                        is_error: true,
-                        error_msg: Some(e.to_string()),
-                        token_expired,
-                        ..Default::default()
-                    })
+        let poller = handle.spawn(async move {
+            let mut interval = tokio::time::interval(Self::CODE88_POLL_INTERVAL);
+            let mut consecutive_errors: u32 = 0;
+
+            loop {
+                // Wait for next poll interval (first tick returns immediately)
+                interval.tick().await;
+
+                // Apply exponential backoff on consecutive errors
+                if consecutive_errors > 0 {
+                    let backoff_secs =
+                        10 * consecutive_errors.min(Self::MAX_BACKOFF_MULTIPLIER) as u64;
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                 }
-            };
-            tx.send(AppEvent::StatusLine88Code(snapshot));
+
+                // Fetch data and send update
+                let snapshot = match fetch_88code_aggregated(&login_token, &api_key).await {
+                    Ok(data) => {
+                        consecutive_errors = 0;
+                        Some(StatusLine88CodeSnapshot {
+                            service_tier: data.service_tier,
+                            daily_cost: data.daily_cost,
+                            daily_tokens: data.daily_tokens,
+                            daily_requests: data.daily_requests,
+                            input_tokens: data.input_tokens,
+                            output_tokens: data.output_tokens,
+                            cache_create_tokens: data.cache_create_tokens,
+                            cache_read_tokens: data.cache_read_tokens,
+                            is_error: false,
+                            error_msg: None,
+                            token_expired: false,
+                        })
+                    }
+                    Err(e) => {
+                        consecutive_errors = consecutive_errors.saturating_add(1);
+                        let token_expired = e.is_token_expired();
+                        Some(StatusLine88CodeSnapshot {
+                            is_error: true,
+                            error_msg: Some(e.to_string()),
+                            token_expired,
+                            ..Default::default()
+                        })
+                    }
+                };
+                tx.send(AppEvent::StatusLine88Code(snapshot));
+            }
         });
+
+        self.code88_poller = Some(poller);
+    }
+
+    /// Stop the background 88code polling task.
+    fn stop_88code_poller(&mut self) {
+        if let Some(handle) = self.code88_poller.take() {
+            handle.abort();
+        }
     }
 
     pub(crate) fn update_git(&mut self, git: Option<StatusLineGitSnapshot>) {
@@ -250,22 +293,25 @@ impl StatusLineOverlay {
         });
     }
 
-    /// Update tokens after successful token refresh.
-    /// The token parameter is the raw login token from 88code-token.json.
-    pub(crate) fn update_api_key(&mut self, token: String) {
+    /// Update authentication tokens after successful browser login refresh.
+    ///
+    /// # Arguments
+    /// * `login_token` - Raw login token from browser authentication (stored in 88code-token.json).
+    ///   This token is used directly for getLoginInfo API, and formatted with "88_" prefix for usage API.
+    pub(crate) fn update_api_key(&mut self, login_token: String) {
         // Store the raw login token for getLoginInfo API
-        self.code88_login_token = Some(token.clone());
+        self.code88_login_token = Some(login_token.clone());
 
         // Format the token as the API key (88_ prefix) for usage API
-        let api_key = if token.starts_with("88_") {
-            token
+        let api_key = if login_token.starts_with("88_") {
+            login_token
         } else {
-            format!("88_{token}")
+            format!("88_{login_token}")
         };
         self.code88_api_key = Some(api_key);
 
-        // Trigger a refresh to fetch new data with the new tokens
-        self.spawn_88code_refresh();
+        // Restart the poller with new tokens (this also fetches data immediately)
+        self.start_88code_poller();
     }
 
     pub(crate) fn set_renderer(&mut self, renderer: Box<dyn StatusLineRenderer>) {
@@ -390,6 +436,25 @@ impl StatusLineOverlay {
 
     pub(crate) fn approval_status_label(subject: &str) -> String {
         format!("Awaiting approval for {subject}")
+    }
+}
+
+impl Drop for StatusLineOverlay {
+    fn drop(&mut self) {
+        self.stop_88code_poller();
+    }
+}
+
+// Manual Debug implementation since JoinHandle doesn't implement Debug
+impl std::fmt::Debug for StatusLineOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StatusLineOverlay")
+            .field("cwd", &self.cwd)
+            .field("codex_home", &self.codex_home)
+            .field("code88_api_key", &self.code88_api_key.is_some())
+            .field("code88_login_token", &self.code88_login_token.is_some())
+            .field("code88_poller", &self.code88_poller.is_some())
+            .finish()
     }
 }
 
