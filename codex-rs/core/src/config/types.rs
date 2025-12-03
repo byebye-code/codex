@@ -369,9 +369,16 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub animations: bool,
 
+<<<<<<< HEAD
     /// Enable the custom Codex status line presentation.
     #[serde(default = "Tui::default_custom_statusline")]
     pub custom_statusline: bool,
+=======
+    /// Show startup tooltips in the TUI welcome screen.
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub show_tooltips: bool,
+>>>>>>> upstream/main
 }
 
 const fn default_true() -> bool {

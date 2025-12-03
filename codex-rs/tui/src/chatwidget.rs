@@ -263,7 +263,11 @@ pub(crate) struct ChatWidgetInit {
     pub(crate) enhanced_keys_supported: bool,
     pub(crate) auth_manager: Arc<AuthManager>,
     pub(crate) feedback: codex_feedback::CodexFeedback,
+<<<<<<< HEAD
     pub(crate) status_renderer: Option<Box<dyn StatusLineRenderer>>,
+=======
+    pub(crate) is_first_run: bool,
+>>>>>>> upstream/main
 }
 
 #[derive(Default)]
@@ -1343,7 +1347,11 @@ impl ChatWidget {
             enhanced_keys_supported,
             auth_manager,
             feedback,
+<<<<<<< HEAD
             status_renderer,
+=======
+            is_first_run,
+>>>>>>> upstream/main
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -1396,7 +1404,7 @@ impl ChatWidget {
             retry_status_header: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
-            show_welcome_banner: true,
+            show_welcome_banner: is_first_run,
             suppress_session_configured_redraw: false,
             pending_notification: None,
             is_review_mode: false,
@@ -1437,7 +1445,11 @@ impl ChatWidget {
             enhanced_keys_supported,
             auth_manager,
             feedback,
+<<<<<<< HEAD
             status_renderer,
+=======
+            ..
+>>>>>>> upstream/main
         } = common;
         let mut rng = rand::rng();
         let placeholder = EXAMPLE_PROMPTS[rng.random_range(0..EXAMPLE_PROMPTS.len())].to_string();
@@ -1492,7 +1504,7 @@ impl ChatWidget {
             retry_status_header: None,
             conversation_id: None,
             queued_user_messages: VecDeque::new(),
-            show_welcome_banner: true,
+            show_welcome_banner: false,
             suppress_session_configured_redraw: true,
             pending_notification: None,
             is_review_mode: false,
