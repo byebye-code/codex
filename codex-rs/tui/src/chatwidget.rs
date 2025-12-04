@@ -1170,11 +1170,15 @@ impl ChatWidget {
             command: ev.command,
             reason: ev.reason,
             risk: ev.risk,
+            proposed_execpolicy_amendment: ev.proposed_execpolicy_amendment,
         };
         if let Some(overlay) = self.status_overlay.as_mut() {
             overlay.set_run_header(&StatusLineOverlay::approval_status_label("command"));
         }
-        self.bottom_pane.push_approval_request(request);
+        self.bottom_pane
+            .push_approval_request(request, &self.config.features);
+            .push_approval_request(request, &self.config.features);
+>>>>>>> upstream/main
         self.request_redraw();
     }
 
@@ -1194,8 +1198,8 @@ impl ChatWidget {
         if let Some(overlay) = self.status_overlay.as_mut() {
             overlay.set_run_header(&StatusLineOverlay::approval_status_label("patch"));
         }
-        self.bottom_pane.push_approval_request(request);
-        self.request_redraw();
+        self.bottom_pane
+            .push_approval_request(request, &self.config.features);
         self.notify(Notification::EditApprovalRequested {
             cwd: self.config.cwd.clone(),
             changes: ev.changes.keys().cloned().collect(),
@@ -1214,7 +1218,8 @@ impl ChatWidget {
             request_id: ev.id,
             message: ev.message,
         };
-        self.bottom_pane.push_approval_request(request);
+        self.bottom_pane
+            .push_approval_request(request, &self.config.features);
         self.request_redraw();
     }
 

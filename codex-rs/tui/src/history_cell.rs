@@ -409,6 +409,19 @@ pub fn new_approval_decision_cell(
                 ],
             )
         }
+        ApprovedExecpolicyAmendment { .. } => {
+            let snippet = Span::from(exec_snippet(&command)).dim();
+            (
+                "✔ ".green(),
+                vec![
+                    "You ".into(),
+                    "approved".bold(),
+                    " codex to run ".into(),
+                    snippet,
+                    " and applied the execpolicy amendment".bold(),
+                ],
+            )
+        }
         ApprovedForSession => {
             let snippet = Span::from(exec_snippet(&command)).dim();
             (
