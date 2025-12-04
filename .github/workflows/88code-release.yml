@@ -16,26 +16,23 @@ jobs:
       - name: Generate date version with build number
         id: version
         run: |
-          # Use Beijing timezone for version date (format: YYYY.M.D.BUILD)
-          # New date always > old date, multiple builds per day supported
-          DATE_VERSION=$(TZ='Asia/Shanghai' date +%Y.%-m.%-d)
-          echo "Date version: $DATE_VERSION (Beijing date)"
+          # Format: YYYY.MMDD.BUILD (semver 3-segment)
+          # Example: 2025.1204.1 = 2025-12-04 build 1
+          YEAR=$(TZ='Asia/Shanghai' date +%Y)
+          MMDD=$(TZ='Asia/Shanghai' date +%m%d)
+          MMDD=$((10#$MMDD))
+          DATE_VERSION="${YEAR}.${MMDD}"
+          echo "Date: $DATE_VERSION"
 
-          # Find the next available build number for today
-          BUILD_NUM=1
-          while true; do
-            CHECK_VERSION="${DATE_VERSION}.${BUILD_NUM}"
-            if npm view @88code/codex@${CHECK_VERSION} > /dev/null 2>&1; then
-              echo "Version $CHECK_VERSION already exists, trying next..."
-              BUILD_NUM=$((BUILD_NUM + 1))
-            else
-              break
-            fi
+          BUILD=1
+          while npm view @88code/codex@${DATE_VERSION}.${BUILD} >/dev/null 2>&1; do
+            echo "${DATE_VERSION}.${BUILD} exists"
+            BUILD=$((BUILD + 1))
           done
 
-          VERSION="${DATE_VERSION}.${BUILD_NUM}"
+          VERSION="${DATE_VERSION}.${BUILD}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "✅ Generated version: $VERSION"
+          echo "Version: $VERSION"
 
   build:
     needs: version
