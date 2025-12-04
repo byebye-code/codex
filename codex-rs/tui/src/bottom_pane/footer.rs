@@ -513,6 +513,7 @@ mod tests {
             use_shift_enter_hint: false,
             is_task_running: false,
             context_window_percent: Some(88),
+            context_window_used_tokens: None,
         });
         for line in lines {
             let mut text = String::new();

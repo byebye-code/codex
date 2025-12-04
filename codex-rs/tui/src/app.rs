@@ -556,6 +556,7 @@ impl App {
                                     feedback: self.feedback.clone(),
                                     skills: self.skills.clone(),
                                     is_first_run: false,
+                                    status_renderer: None,
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,

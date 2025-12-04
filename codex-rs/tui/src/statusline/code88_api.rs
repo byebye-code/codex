@@ -147,7 +147,7 @@ lazy_static! {
         .user_agent("curl/8.0")
         .pool_max_idle_per_host(2)
         .build()
-        .expect("Failed to create HTTP client");
+        .unwrap_or_else(|_| reqwest::Client::new());
 }
 
 /// Get the shared HTTP client for API requests.
