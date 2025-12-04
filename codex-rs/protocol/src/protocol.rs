@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use crate::ConversationId;
 use crate::approvals::ElicitationRequestEvent;
-use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
 use crate::items::TurnItem;
@@ -20,6 +19,7 @@ use crate::message_history::HistoryEntry;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
 use crate::num_format::format_with_separators;
+use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
 use crate::user_input::UserInput;
@@ -208,6 +208,9 @@ pub enum Op {
         /// The raw command string after '!'
         command: String,
     },
+
+    /// Request the list of available models.
+    ListModels,
 }
 
 /// Determines the conditions under which the user is consulted to approve
