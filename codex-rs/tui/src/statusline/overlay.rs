@@ -28,8 +28,8 @@ use ratatui::layout::Rect;
 use ratatui::widgets::Widget as _;
 use tokio::process::Command;
 use tokio::runtime::Handle;
-use tokio::task::spawn_blocking;
 use tokio::task::JoinHandle;
+use tokio::task::spawn_blocking;
 
 use codex_code88 as code88;
 
