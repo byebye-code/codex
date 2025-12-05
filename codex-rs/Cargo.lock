@@ -1277,6 +1277,7 @@ dependencies = [
  "async-trait",
  "clap",
  "codex-core",
+ "codex-execpolicy",
  "libc",
  "path-absolutize",
  "pretty_assertions",
