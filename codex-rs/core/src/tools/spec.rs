@@ -174,10 +174,10 @@ fn create_exec_command_tool() -> ToolSpec {
         },
     );
     properties.insert(
-        "with_escalated_permissions".to_string(),
-        JsonSchema::Boolean {
+        "sandbox_permissions".to_string(),
+        JsonSchema::String {
             description: Some(
-                "Whether to request escalated permissions. Set to true if command needs to be run without sandbox restrictions"
+                "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     .to_string(),
             ),
         },
@@ -186,7 +186,7 @@ fn create_exec_command_tool() -> ToolSpec {
         "justification".to_string(),
         JsonSchema::String {
             description: Some(
-                "Only set if with_escalated_permissions is true. 1-sentence explanation of why we want to run this command."
+                "Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command."
                     .to_string(),
             ),
         },
@@ -274,15 +274,15 @@ fn create_shell_tool() -> ToolSpec {
     );
 
     properties.insert(
-        "with_escalated_permissions".to_string(),
-        JsonSchema::Boolean {
-            description: Some("Whether to request escalated permissions. Set to true if command needs to be run without sandbox restrictions".to_string()),
+        "sandbox_permissions".to_string(),
+        JsonSchema::String {
+            description: Some("Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\".".to_string()),
         },
     );
     properties.insert(
         "justification".to_string(),
         JsonSchema::String {
-            description: Some("Only set if with_escalated_permissions is true. 1-sentence explanation of why we want to run this command.".to_string()),
+            description: Some("Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command.".to_string()),
         },
     );
 
@@ -332,21 +332,30 @@ fn create_shell_command_tool() -> ToolSpec {
         },
     );
     properties.insert(
+        "login".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "Whether to run the shell with login shell semantics. Defaults to true."
+                    .to_string(),
+            ),
+        },
+    );
+    properties.insert(
         "timeout_ms".to_string(),
         JsonSchema::Number {
             description: Some("The timeout for the command in milliseconds".to_string()),
         },
     );
     properties.insert(
-        "with_escalated_permissions".to_string(),
-        JsonSchema::Boolean {
-            description: Some("Whether to request escalated permissions. Set to true if command needs to be run without sandbox restrictions".to_string()),
+        "sandbox_permissions".to_string(),
+        JsonSchema::String {
+            description: Some("Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\".".to_string()),
         },
     );
     properties.insert(
         "justification".to_string(),
         JsonSchema::String {
-            description: Some("Only set if with_escalated_permissions is true. 1-sentence explanation of why we want to run this command.".to_string()),
+            description: Some("Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command.".to_string()),
         },
     );
 
@@ -795,10 +804,16 @@ pub(crate) fn create_tools_json_for_chat_completions_api(
             }
 
             if let Some(map) = tool.as_object_mut() {
+                let name = map
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
                 // Remove "type" field as it is not needed in chat completions.
                 map.remove("type");
                 Some(json!({
                     "type": "function",
+                    "name": name,
                     "function": map,
                 }))
             } else {
@@ -2072,6 +2087,60 @@ Examples of valid command strings:
                 description: "Do something cool".to_string(),
                 strict: false,
             })
+        );
+    }
+
+    #[test]
+    fn chat_tools_include_top_level_name() {
+        let mut properties = BTreeMap::new();
+        properties.insert("foo".to_string(), JsonSchema::String { description: None });
+        let tools = vec![ToolSpec::Function(ResponsesApiTool {
+            name: "demo".to_string(),
+            description: "A demo tool".to_string(),
+            strict: false,
+            parameters: JsonSchema::Object {
+                properties,
+                required: None,
+                additional_properties: None,
+            },
+        })];
+
+        let responses_json = create_tools_json_for_responses_api(&tools).unwrap();
+        assert_eq!(
+            responses_json,
+            vec![json!({
+                "type": "function",
+                "name": "demo",
+                "description": "A demo tool",
+                "strict": false,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "foo": { "type": "string" }
+                    },
+                },
+            })]
+        );
+
+        let tools_json = create_tools_json_for_chat_completions_api(&tools).unwrap();
+
+        assert_eq!(
+            tools_json,
+            vec![json!({
+                "type": "function",
+                "name": "demo",
+                "function": {
+                    "name": "demo",
+                    "description": "A demo tool",
+                    "strict": false,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "foo": { "type": "string" }
+                        },
+                    },
+                }
+            })]
         );
     }
 }
