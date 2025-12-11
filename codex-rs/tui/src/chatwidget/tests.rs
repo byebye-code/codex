@@ -3343,7 +3343,6 @@ fn typed_input_preserves_padding_and_margin_with_status_overlay() {
 // then the exec block, another blank line, the status line, a blank line, and the composer.
 #[test]
 fn chatwidget_exec_and_status_layout_vt100_snapshot() {
-<<<<<<< HEAD
     set_devspace_override_for_tests(Some("earth".to_string()));
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual_with_custom_statusline();
     clear_devspace_override_for_tests();
@@ -3353,9 +3352,6 @@ fn chatwidget_exec_and_status_layout_vt100_snapshot() {
         status_line.set_aws_profile(Some("codex-aws-test".to_string()));
     }
     chat.update_statusline_kube_context(Some("codex-dev".to_string()));
-=======
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None);
->>>>>>> upstream/main
     chat.handle_codex_event(Event {
         id: "t1".into(),
         msg: EventMsg::AgentMessage(AgentMessageEvent { message: "I’m going to search the repo for where “Change Approved” is rendered to update that view.".into() }),

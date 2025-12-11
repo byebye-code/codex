@@ -509,11 +509,8 @@ impl App {
                     models_manager: self.server.get_models_manager(),
                     feedback: self.feedback.clone(),
                     is_first_run: false,
-<<<<<<< HEAD
                     status_renderer: None,
-=======
                     model_family: model_family.clone(),
->>>>>>> upstream/main
                 };
                 self.chat_widget = ChatWidget::new(init, self.server.clone());
                 self.current_model = model_family.get_model_slug().to_string();
@@ -563,11 +560,8 @@ impl App {
                                     models_manager: self.server.get_models_manager(),
                                     feedback: self.feedback.clone(),
                                     is_first_run: false,
-<<<<<<< HEAD
                                     status_renderer: None,
-=======
                                     model_family: model_family.clone(),
->>>>>>> upstream/main
                                 };
                                 self.chat_widget = ChatWidget::new_from_existing(
                                     init,
@@ -721,7 +715,6 @@ impl App {
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
             }
-<<<<<<< HEAD
             AppEvent::StatusLineGit(snapshot) => {
                 self.chat_widget.update_statusline_git(snapshot);
                 tui.frame_requester().schedule_frame();
@@ -743,11 +736,9 @@ impl App {
                     tracing::warn!("Failed to refresh 88code token: {}", e);
                 }
             },
-=======
             AppEvent::OpenAllModelsPopup { models } => {
                 self.chat_widget.open_all_models_popup(models);
             }
->>>>>>> upstream/main
             AppEvent::OpenFullAccessConfirmation { preset } => {
                 self.chat_widget.open_full_access_confirmation(preset);
             }

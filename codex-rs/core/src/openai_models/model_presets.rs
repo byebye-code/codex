@@ -260,7 +260,6 @@ mod tests {
         assert!(default_models == 1);
     }
 
-
     #[test]
     fn gpt_5_1_codex_max_visible_for_api_key_auth() {
         let presets = builtin_model_presets(Some(AuthMode::ApiKey));

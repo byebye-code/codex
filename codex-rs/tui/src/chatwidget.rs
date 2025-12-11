@@ -1390,11 +1390,8 @@ impl ChatWidget {
             models_manager,
             feedback,
             is_first_run,
-<<<<<<< HEAD
             status_renderer,
-=======
             model_family,
->>>>>>> upstream/main
         } = common;
         let model_slug = model_family.get_model_slug().to_string();
         let mut config = config;
@@ -1497,12 +1494,8 @@ impl ChatWidget {
             auth_manager,
             models_manager,
             feedback,
-<<<<<<< HEAD
-            skills,
             status_renderer,
-=======
             model_family,
->>>>>>> upstream/main
             ..
         } = common;
         let model_slug = model_family.get_model_slug().to_string();
