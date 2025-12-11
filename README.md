@@ -1,3 +1,9 @@
+> **⚠️ 维护公告 / Maintenance Notice**
+> 本项目维护者精力有限，不打算维护，已于 12.11 停止维护。有接收维护意愿的可向大米树申请资格。维护较简单，使用 claude code 让 AI 合并上游处理冲突和 clippy 报错即可。
+> _This project maintenance has been discontinued as of December 11th. Anyone interested in taking over maintenance can apply to 大米树 (DaMiShu). Maintenance is relatively simple - use Claude Code to let AI merge upstream and handle conflicts and clippy errors._
+
+---
+
 <p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
 
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.

@@ -80,6 +80,20 @@ impl WidgetRef for &WelcomeWidget {
             "Codex".bold(),
             ", OpenAI's command-line coding agent".into(),
         ]));
+        lines.push("".into());
+        lines.push(Line::from(vec![
+            "  ".into(),
+            "⚠️  ".into(),
+            "本项目维护者精力有限，不打算维护，已于12.11停止维护。".into(),
+        ]));
+        lines.push(Line::from(vec![
+            "  ".into(),
+            "   有接收维护意愿的可向大米树申请资格。".into(),
+        ]));
+        lines.push(Line::from(vec![
+            "  ".into(),
+            "   维护较简单，使用claude code让ai合并上游处理冲突和clippy报错即可。".into(),
+        ]));
 
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
