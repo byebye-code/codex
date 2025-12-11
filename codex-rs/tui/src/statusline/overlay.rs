@@ -121,8 +121,10 @@ impl StatusLineOverlay {
     }
 
     pub(crate) fn sync_model(&mut self, config: &Config) {
-        self.state
-            .update_model(config.model.clone(), config.model_reasoning_effort);
+        self.state.update_model(
+            config.model.clone().unwrap_or_default(),
+            config.model_reasoning_effort,
+        );
     }
 
     pub(crate) fn refresh_environment(&mut self) {

@@ -5,6 +5,8 @@ pub enum UpdateAction {
     NpmGlobalLatest,
     /// Update via `bun install -g @88code/codex@latest`.
     BunGlobalLatest,
+    /// Update via `brew upgrade codex`.
+    BrewUpgrade,
 }
 
 impl UpdateAction {
@@ -13,6 +15,7 @@ impl UpdateAction {
         match self {
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@88code/codex"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@88code/codex"]),
+            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "codex"]),
         }
     }
 
@@ -26,15 +29,33 @@ impl UpdateAction {
 
 #[cfg(not(debug_assertions))]
 pub(crate) fn get_update_action() -> Option<UpdateAction> {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
     let managed_by_bun = std::env::var_os("CODEX_MANAGED_BY_BUN").is_some();
 
-    detect_update_action(managed_by_bun)
+    detect_update_action(
+        cfg!(target_os = "macos"),
+        &exe,
+        managed_by_npm,
+        managed_by_bun,
+    )
 }
 
 #[cfg(any(not(debug_assertions), test))]
-fn detect_update_action(managed_by_bun: bool) -> Option<UpdateAction> {
-    if managed_by_bun {
+fn detect_update_action(
+    is_macos: bool,
+    current_exe: &std::path::Path,
+    managed_by_npm: bool,
+    managed_by_bun: bool,
+) -> Option<UpdateAction> {
+    if managed_by_npm {
+        Some(UpdateAction::NpmGlobalLatest)
+    } else if managed_by_bun {
         Some(UpdateAction::BunGlobalLatest)
+    } else if is_macos
+        && (current_exe.starts_with("/opt/homebrew") || current_exe.starts_with("/usr/local"))
+    {
+        Some(UpdateAction::BrewUpgrade)
     } else {
         // 88code: Default to npm update
         Some(UpdateAction::NpmGlobalLatest)
@@ -47,15 +68,35 @@ mod tests {
 
     #[test]
     fn detects_update_action_without_env_mutation() {
-        // Default to npm
         assert_eq!(
-            detect_update_action(false),
+            detect_update_action(false, std::path::Path::new("/any/path"), false, false),
             Some(UpdateAction::NpmGlobalLatest)
         );
-        // Bun if env var is set
         assert_eq!(
-            detect_update_action(true),
+            detect_update_action(false, std::path::Path::new("/any/path"), true, false),
+            Some(UpdateAction::NpmGlobalLatest)
+        );
+        assert_eq!(
+            detect_update_action(false, std::path::Path::new("/any/path"), false, true),
             Some(UpdateAction::BunGlobalLatest)
+        );
+        assert_eq!(
+            detect_update_action(
+                true,
+                std::path::Path::new("/opt/homebrew/bin/codex"),
+                false,
+                false
+            ),
+            Some(UpdateAction::BrewUpgrade)
+        );
+        assert_eq!(
+            detect_update_action(
+                true,
+                std::path::Path::new("/usr/local/bin/codex"),
+                false,
+                false
+            ),
+            Some(UpdateAction::BrewUpgrade)
         );
     }
 }
