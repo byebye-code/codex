@@ -460,7 +460,6 @@ fn make_chatwidget_manual(
         last_rendered_width: std::cell::Cell::new(None),
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
-        task_started_at: None,
     };
     if let Some(overlay) = widget.status_overlay.as_mut() {
         overlay.bootstrap(&widget.config, widget.token_info.clone(), Vec::new());
@@ -1990,7 +1989,7 @@ fn single_reasoning_option_skips_selection() {
 
     let single_effort = vec![ReasoningEffortPreset {
         effort: ReasoningEffortConfig::High,
-        description: "Maximizes reasoning depth for complex or ambiguous problems".to_string(),
+        description: "Greater reasoning depth for complex or ambiguous problems".to_string(),
     }];
     let preset = ModelPreset {
         id: "model-with-single-reasoning".to_string(),

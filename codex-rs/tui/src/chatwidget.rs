@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 use codex_app_server_protocol::AuthMode;
 use codex_backend_client::Client as BackendClient;
@@ -343,8 +342,6 @@ pub(crate) struct ChatWidget {
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
     current_rollout_path: Option<PathBuf>,
-    // Current task start time
-    task_started_at: Option<Instant>,
 }
 
 struct UserMessage {
@@ -581,23 +578,26 @@ impl ChatWidget {
         self.set_status_header(String::from("Working"));
         self.full_reasoning_buffer.clear();
         self.reasoning_buffer.clear();
+<<<<<<< HEAD
         if let Some(overlay) = self.status_overlay.as_mut() {
             overlay.set_interrupt_hint_visible(true);
             overlay.start_task("Working");
         }
         self.task_started_at = Some(Instant::now());
+=======
+>>>>>>> upstream/main
         self.request_redraw();
     }
 
     fn on_task_complete(&mut self, last_agent_message: Option<String>) {
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
-        self.add_final_message_separator();
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
+<<<<<<< HEAD
         if let Some(overlay) = self.status_overlay.as_mut() {
             overlay.set_interrupt_hint_visible(false);
             overlay.complete_task();
@@ -606,6 +606,8 @@ impl ChatWidget {
             overlay.spawn_background_tasks();
         }
         self.task_started_at = None;
+=======
+>>>>>>> upstream/main
         self.request_redraw();
 
         // If there is a queued user message, send exactly one now to begin the next turn.
@@ -746,7 +748,6 @@ impl ChatWidget {
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.stream_controller = None;
-        self.task_started_at = None;
         self.maybe_show_pending_rate_limit_prompt();
     }
     pub(crate) fn get_model_family(&self) -> ModelFamily {
@@ -1096,6 +1097,14 @@ impl ChatWidget {
         self.flush_active_cell();
 
         if self.stream_controller.is_none() {
+            if self.needs_final_message_separator {
+                let elapsed_seconds = self
+                    .bottom_pane
+                    .status_widget()
+                    .map(super::status_indicator_widget::StatusIndicatorWidget::elapsed_seconds);
+                self.add_to_history(history_cell::FinalMessageSeparator::new(elapsed_seconds));
+                self.needs_final_message_separator = false;
+            }
             self.stream_controller = Some(StreamController::new(
                 self.last_rendered_width.get().map(|w| w.saturating_sub(2)),
             ));
@@ -1106,16 +1115,6 @@ impl ChatWidget {
             self.app_event_tx.send(AppEvent::StartCommitAnimation);
         }
         self.request_redraw();
-    }
-
-    fn add_final_message_separator(&mut self) {
-        if self.needs_final_message_separator {
-            let elapsed_seconds = self
-                .task_started_at
-                .map(|start_time| start_time.elapsed().as_secs());
-            self.add_to_history(history_cell::FinalMessageSeparator::new(elapsed_seconds));
-            self.needs_final_message_separator = false;
-        }
     }
 
     pub(crate) fn handle_exec_end_now(&mut self, ev: ExecCommandEndEvent) {
@@ -1460,7 +1459,6 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
-            task_started_at: None,
         };
 
         widget.prefetch_rate_limits();
@@ -1565,7 +1563,6 @@ impl ChatWidget {
             last_rendered_width: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
-            task_started_at: None,
         };
 
         widget.prefetch_rate_limits();
@@ -2566,7 +2563,8 @@ impl ChatWidget {
             format!("⚠ {effort_label} reasoning effort can quickly consume Plus plan rate limits.")
         });
         let warn_for_model = preset.model.starts_with("gpt-5.1-codex")
-            || preset.model.starts_with("gpt-5.1-codex-max");
+            || preset.model.starts_with("gpt-5.1-codex-max")
+            || preset.model.starts_with("gpt-5.2");
 
         struct EffortChoice {
             stored: Option<ReasoningEffortConfig>,
